@@ -55,7 +55,7 @@ cargo build --release
 cargo test --workspace
 ```
 
-开发、调试与发布流程见 [docs/development.md](docs/development.md)。
+开发、调试与发布流程见 [docs/development.md](docs/development.md)；AI 协作者的说明见 [AGENTS.md](AGENTS.md)。
 
 ## 电量精度
 

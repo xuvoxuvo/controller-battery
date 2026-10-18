@@ -2,6 +2,8 @@
 
 面向修改本项目的人；普通用户请看 [README](../README.md)。
 
+AI 代理请先读根目录的 [AGENTS.md](../AGENTS.md)（架构、命令、约定与已知坑）。
+
 ## 环境
 
 - Windows 10 1809+ / Windows 11
