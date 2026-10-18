@@ -8,17 +8,27 @@
 
 > 项目早期版本是一个 PowerShell 脚本，保留在 [`legacy/powershell`](legacy/powershell) 里作参考，不再维护。
 
+![界面](docs/images/widget.png)
+
 ## 状态
 
 `0.1.0` 开发中：核心协议层、Windows HID / XInput 后端、悬浮窗已完成；正在做真机联调。
 
 ## 构建
 
-需要 Rust（本机装在 `C:\App\Rust`）：
+本机工具链都装在 `C:\App` 下（按软件分目录）：
+
+| 工具 | 路径 |
+| --- | --- |
+| Git | `C:\App\Git` |
+| Rust（rustup + cargo） | `C:\App\Rust` |
+| MinGW-w64（GNU 工具链的链接器） | `C:\App\mingw64` |
+
+一键构建：
 
 ```powershell
-cargo build --release
-# 产物：target\release\controller-battery.exe
+.\scripts\build.ps1
+# 产物：target\release\controller-battery.exe（约 3.7 MB，单文件、无运行时依赖）
 ```
 
 运行测试：
