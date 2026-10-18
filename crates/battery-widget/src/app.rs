@@ -56,7 +56,7 @@ fn install_fonts(ctx: &egui::Context) {
         let mut fonts = egui::FontDefinitions::default();
         fonts
             .font_data
-            .insert("cjk".to_owned(), egui::FontData::from_owned(bytes).into());
+            .insert("cjk".to_owned(), egui::FontData::from_owned(bytes));
         // Append as a fallback so Latin text keeps the default font and only
         // CJK glyphs come from the system font.
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -133,7 +133,13 @@ impl App {
     }
 }
 
-fn paint_card(ui: &egui::Ui, rect: Rect, reading: Option<&BatteryReading>, degraded: bool, stale: bool) {
+fn paint_card(
+    ui: &egui::Ui,
+    rect: Rect,
+    reading: Option<&BatteryReading>,
+    degraded: bool,
+    stale: bool,
+) {
     let painter = ui.painter();
     let bg = Color32::from_rgb(22, 22, 26);
     let border = Color32::from_rgb(46, 48, 54);
@@ -163,7 +169,11 @@ fn paint_card(ui: &egui::Ui, rect: Rect, reading: Option<&BatteryReading>, degra
     let muted = Color32::from_rgb(150, 156, 165);
 
     // Header: device + transport.
-    let header = format!("{} · {}", reading.device.to_uppercase(), reading.transport.label());
+    let header = format!(
+        "{} · {}",
+        reading.device.to_uppercase(),
+        reading.transport.label()
+    );
     painter.text(
         egui::pos2(rect.left() + 14.0, rect.top() + 9.0),
         Align2::LEFT_TOP,
@@ -177,13 +187,21 @@ fn paint_card(ui: &egui::Ui, rect: Rect, reading: Option<&BatteryReading>, degra
         Some(p) => format!("{p}%"),
         None => "--".to_string(),
     };
-    let percent_text = if degraded { format!("≈{percent_text}") } else { percent_text };
+    let percent_text = if degraded {
+        format!("≈{percent_text}")
+    } else {
+        percent_text
+    };
     painter.text(
         egui::pos2(rect.left() + 12.0, rect.top() + 24.0),
         Align2::LEFT_TOP,
         percent_text,
         FontId::proportional(30.0),
-        if stale || degraded { muted } else { Color32::from_rgb(240, 242, 246) },
+        if stale || degraded {
+            muted
+        } else {
+            Color32::from_rgb(240, 242, 246)
+        },
     );
 
     // State on the right.

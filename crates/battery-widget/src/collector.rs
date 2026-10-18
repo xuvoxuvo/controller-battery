@@ -84,7 +84,8 @@ fn read_dualsense(device: &HidDevice, state: &Arc<Mutex<Shared>>) {
         // once a host has written to it; ask for it if we still see the
         // simplified format.
         if decoded.degraded && !asked_for_full_report {
-            asked_for_full_report = device.write_report(&battery_core::dualsense::noop_output_report());
+            asked_for_full_report =
+                device.write_report(&battery_core::dualsense::noop_output_report());
         }
 
         publish_dualsense(state, &decoded);

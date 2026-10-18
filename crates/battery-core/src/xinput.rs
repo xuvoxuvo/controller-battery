@@ -99,11 +99,11 @@ pub fn debug_slot(slot: u32) -> Option<String> {
     }
 
     let mut battery = XINPUT_BATTERY_INFORMATION::default();
-    let result = unsafe { XInputGetBatteryInformation(slot, BATTERY_DEVTYPE_GAMEPAD, &mut battery) };
+    let result =
+        unsafe { XInputGetBatteryInformation(slot, BATTERY_DEVTYPE_GAMEPAD, &mut battery) };
 
     Some(format!(
         "connected, batteryType=0x{:02X}, batteryLevel=0x{:02X} (call result {})",
         battery.BatteryType.0, battery.BatteryLevel.0, result
     ))
 }
-

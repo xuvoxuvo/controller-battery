@@ -18,7 +18,9 @@ fn read_with_timeout(device: HidDevice, timeout: Duration) -> Option<(usize, Vec
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut buffer = [0u8; 256];
-        let result = device.read_report(&mut buffer).map(|n| (n, buffer[..n].to_vec()));
+        let result = device
+            .read_report(&mut buffer)
+            .map(|n| (n, buffer[..n].to_vec()));
         let _ = tx.send(result);
     });
     rx.recv_timeout(timeout).ok().flatten()
@@ -31,8 +33,8 @@ fn main() {
 
     let interfaces: Vec<_> = enumerate_all()
         .into_iter()
-        .filter(|i| vid.map_or(true, |v| i.vendor_id == v))
-        .filter(|i| pid.map_or(true, |p| i.product_id == p))
+        .filter(|i| vid.is_none_or(|v| i.vendor_id == v))
+        .filter(|i| pid.is_none_or(|p| i.product_id == p))
         .collect();
 
     println!("{} interfaces match", interfaces.len());

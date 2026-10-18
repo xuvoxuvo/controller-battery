@@ -4,19 +4,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Settings {
     pub window_x: Option<f32>,
     pub window_y: Option<f32>,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            window_x: None,
-            window_y: None,
-        }
-    }
 }
 
 fn config_path() -> Option<PathBuf> {

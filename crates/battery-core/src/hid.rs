@@ -44,7 +44,10 @@ impl HidInterface {
 pub type HidController = HidInterface;
 
 fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Enumerate every HID interface, with vendor/product ids resolved.
@@ -198,7 +201,8 @@ impl HidDevice {
     /// If write access is denied (another process owns the device), fall back
     /// to read-only.
     pub fn open(controller: &HidController) -> Option<Self> {
-        Self::open_with_access(controller, true).or_else(|| Self::open_with_access(controller, false))
+        Self::open_with_access(controller, true)
+            .or_else(|| Self::open_with_access(controller, false))
     }
 
     /// Open a controller, optionally requesting write access (needed to send
