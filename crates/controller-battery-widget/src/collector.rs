@@ -251,7 +251,7 @@ fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
         }
         drop(shared);
 
-        std::thread::sleep(Duration::from_secs(3));
+        std::thread::sleep(Duration::from_secs(1));
     });
 }
 

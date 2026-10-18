@@ -5,6 +5,14 @@
 use controller_battery_core::bluetooth::{enumerate, looks_like_controller};
 
 fn main() {
+    println!("--- probe (unfiltered) ---");
+    for device in controller_battery_core::bluetooth::probe_all() {
+        println!(
+            "  {:>3}%  connected={} addr={:?}  {}  [{}]",
+            device.percent, device.connected, device.address, device.name, device.instance_id
+        );
+    }
+
     let devices = enumerate();
     println!(
         "{} Bluetooth devices with a battery property",
