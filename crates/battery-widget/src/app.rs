@@ -16,7 +16,7 @@ const STALE_AFTER: Duration = Duration::from_secs(5);
 pub struct App {
     shared: Arc<Mutex<Shared>>,
     settings: Settings,
-    last_saved: Option<Vec2>,
+    last_saved: Option<egui::Pos2>,
 }
 
 impl App {
@@ -137,7 +137,7 @@ fn paint_card(ui: &egui::Ui, rect: Rect, reading: Option<&BatteryReading>, degra
     let border = Color32::from_rgb(46, 48, 54);
 
     painter.rect_filled(rect, Rounding::same(16.0), bg);
-    painter.rect_stroke(rect, Rounding::same(16.0), Stroke::new(1.0, border));
+    painter.rect_stroke(rect, Rounding::same(16.0), Stroke::new(1.0_f32, border));
 
     let Some(reading) = reading else {
         painter.text(
