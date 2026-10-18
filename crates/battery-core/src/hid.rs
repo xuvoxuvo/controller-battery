@@ -15,7 +15,7 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::Win32::Devices::HumanInterfaceDevice::{
     HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetFeature, HidD_GetPreparsedData,
-    HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA,
+    HidD_GetProductString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA,
 };
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
 use windows::Win32::Storage::FileSystem::{
@@ -51,6 +51,37 @@ fn wide(s: &str) -> Vec<u16> {
         .encode_wide()
         .chain(std::iter::once(0))
         .collect()
+}
+
+/// Read the product string of a HID interface (the name shown in Device Manager).
+pub fn product_name(path: &str) -> Option<String> {
+    unsafe {
+        let handle = CreateFileW(
+            PCWSTR(wide(path).as_ptr()),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            None,
+        )
+        .ok()?;
+
+        let mut buffer = [0u16; 128];
+        let ok = HidD_GetProductString(
+            handle,
+            buffer.as_mut_ptr() as *mut core::ffi::c_void,
+            (buffer.len() * 2) as u32,
+        );
+        let _ = CloseHandle(handle);
+
+        if !ok.as_bool() {
+            return None;
+        }
+        let end = buffer.iter().position(|&c| c == 0).unwrap_or(0);
+        let name = String::from_utf16_lossy(&buffer[..end]);
+        (!name.is_empty()).then_some(name)
+    }
 }
 
 /// Enumerate every HID interface, with vendor/product ids resolved.

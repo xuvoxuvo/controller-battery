@@ -86,14 +86,26 @@ pub fn spawn(state: Arc<Mutex<Shared>>) {
 }
 
 fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
+    // How long a controller may be missing from enumeration before its row is
+    // retired. Enumeration is authoritative, so this only smooths over the
+    // instant between a reconnect.
+    const GONE_GRACE: Duration = Duration::from_secs(3);
+    let mut missing_since: Option<Instant> = None;
+
     std::thread::spawn(move || loop {
         let controller = enumerate_dualsense().into_iter().next();
         let Some(controller) = controller else {
-            // Do not remove the row here: a sleeping controller disappears for
-            // a moment and the UI should not collapse. `prune` retires it.
-            std::thread::sleep(Duration::from_millis(1200));
+            match missing_since {
+                Some(since) if since.elapsed() > GONE_GRACE => {
+                    state.lock().unwrap().remove("dualsense");
+                }
+                Some(_) => {}
+                None => missing_since = Some(Instant::now()),
+            }
+            std::thread::sleep(Duration::from_millis(500));
             continue;
         };
+        missing_since = None;
 
         let Some(device) = HidDevice::open(&controller) else {
             state.lock().unwrap().error =
@@ -126,22 +138,67 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
     });
 }
 
-fn spawn_xinput(state: Arc<Mutex<Shared>>) {
-    std::thread::spawn(move || loop {
-        for slot in 0..xinput::MAX_SLOTS {
-            let key = format!("xinput:{slot}");
-            match xinput::poll_slot(slot) {
-                Some(reading) => {
-                    let mut shared = state.lock().unwrap();
-                    shared.upsert(&key, reading, false, STALE_AFTER);
-                }
-                None => {
-                    state.lock().unwrap().remove(&key);
-                }
+/// Product names of controller-like HID devices.
+///
+/// XInput itself does not expose device names, so we borrow the HID product
+/// string (same name Device Manager shows) to label the slot.
+fn controller_product_names() -> Vec<String> {
+    const VENDORS: [u16; 9] = [
+        0x045E, // Microsoft
+        0x2DC8, // 8BitDo
+        0x057E, // Nintendo
+        0x0F0D, // Hori
+        0x1532, // Razer
+        0x28DE, // Valve
+        0x0E6F, // PDP
+        0x24C6, // PowerA
+        0x054C, // Sony
+    ];
+
+    let mut names: Vec<String> = Vec::new();
+    for interface in battery_core::hid::enumerate_all() {
+        if !VENDORS.contains(&interface.vendor_id) {
+            continue;
+        }
+        if let Some(name) = battery_core::hid::product_name(&interface.path) {
+            if !names.contains(&name) {
+                names.push(name);
             }
         }
-        state.lock().unwrap().prune();
-        std::thread::sleep(Duration::from_millis(800));
+    }
+    names
+}
+
+fn spawn_xinput(state: Arc<Mutex<Shared>>) {
+    std::thread::spawn(move || {
+        let mut names: Vec<String> = Vec::new();
+        let mut ticks = 0u32;
+        loop {
+            // Renaming only matters when devices come and go; refreshing it
+            // every few seconds is enough and avoids enumerating at 1 Hz.
+            if ticks % 8 == 0 {
+                names = controller_product_names();
+            }
+            ticks = ticks.wrapping_add(1);
+
+            for slot in 0..xinput::MAX_SLOTS {
+                let key = format!("xinput:{slot}");
+                match xinput::poll_slot(slot) {
+                    Some(mut reading) => {
+                        if names.len() == 1 {
+                            reading.device = names[0].clone();
+                        }
+                        let mut shared = state.lock().unwrap();
+                        shared.upsert(&key, reading, false, STALE_AFTER);
+                    }
+                    None => {
+                        state.lock().unwrap().remove(&key);
+                    }
+                }
+            }
+            state.lock().unwrap().prune();
+            std::thread::sleep(Duration::from_millis(800));
+        }
     });
 }
 
@@ -172,9 +229,19 @@ fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
                 .upsert(&key, reading, false, BLE_STALE_AFTER);
         }
 
-        // Stale BLE entries are retired by `prune`; `seen` is only used to keep
-        // polling the same set of devices.
-        let _ = &seen;
+        // A device that is no longer paired should disappear immediately: the
+        // pairing list is authoritative, unlike a missing report.
+        let mut shared = state.lock().unwrap();
+        let gone: Vec<String> = shared
+            .devices
+            .keys()
+            .filter(|k| k.starts_with("ble:") && !seen.contains(k))
+            .cloned()
+            .collect();
+        for key in gone {
+            shared.remove(&key);
+        }
+        drop(shared);
 
         std::thread::sleep(Duration::from_secs(10));
     });
