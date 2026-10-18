@@ -1,0 +1,35 @@
+//! Controller battery widget — a small always-on-top card showing the battery
+//! level of a connected game controller.
+
+mod app;
+mod collector;
+mod settings;
+
+use eframe::egui;
+
+fn main() -> eframe::Result<()> {
+    let settings = settings::Settings::load();
+
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([230.0, 92.0])
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_always_on_top()
+        .with_resizable(false)
+        .with_taskbar(false);
+
+    if let (Some(x), Some(y)) = (settings.window_x, settings.window_y) {
+        viewport = viewport.with_position([x, y]);
+    }
+
+    let options = eframe::NativeOptions {
+        viewport,
+        ..Default::default()
+    };
+
+    eframe::run_native(
+        "Controller Battery",
+        options,
+        Box::new(move |cc| Ok(Box::new(app::App::new(cc, settings)))),
+    )
+}
