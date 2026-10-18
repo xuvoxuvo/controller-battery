@@ -176,7 +176,7 @@ fn spawn_xinput(state: Arc<Mutex<Shared>>) {
         loop {
             // Renaming only matters when devices come and go; refreshing it
             // every few seconds is enough and avoids enumerating at 1 Hz.
-            if ticks % 8 == 0 {
+            if ticks.is_multiple_of(8) {
                 names = controller_product_names();
             }
             ticks = ticks.wrapping_add(1);
