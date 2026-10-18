@@ -13,7 +13,7 @@ pub struct Settings {
 fn config_path() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
     let mut dir = PathBuf::from(base);
-    dir.push("ControllerBattery");
+    dir.push("PadBattery");
     Some(dir.join("settings.json"))
 }
 

@@ -4,12 +4,12 @@
 //! and prints whatever the pad answers. Read-only from the pad's perspective:
 //! the command only asks for version information.
 //!
-//! Usage: cargo run -p battery-core --example 8bitdo_probe
+//! Usage: cargo run -p pad-battery-core --example 8bitdo_probe
 
 use std::sync::mpsc;
 use std::time::Duration;
 
-use battery_core::hid::{enumerate_all, HidDevice};
+use pad_battery_core::hid::{enumerate_all, HidDevice};
 
 fn main() {
     let candidates: Vec<_> = enumerate_all()

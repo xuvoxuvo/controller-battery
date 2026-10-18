@@ -1,6 +1,6 @@
 //! Dump HID interfaces matching a vendor/product id.
 //!
-//! Usage: cargo run -p battery-core --example hid_dump -- <vid_hex> <pid_hex>
+//! Usage: cargo run -p pad-battery-core --example hid_dump -- <vid_hex> <pid_hex>
 //!
 //! Reads use a watchdog thread so interfaces that never emit reports (for
 //! example XInput-only collections) do not block the dump.
@@ -8,7 +8,7 @@
 use std::sync::mpsc;
 use std::time::Duration;
 
-use battery_core::hid::{enumerate_all, HidDevice};
+use pad_battery_core::hid::{enumerate_all, HidDevice};
 
 fn parse_hex(value: &str) -> Option<u16> {
     u16::from_str_radix(value.trim_start_matches("0x"), 16).ok()

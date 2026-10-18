@@ -98,25 +98,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "battery-core"
-version = "0.1.0"
-dependencies = [
- "thiserror 1.0.69",
- "windows",
-]
-
-[[package]]
-name = "battery-widget"
-version = "0.1.0"
-dependencies = [
- "battery-core",
- "eframe",
- "egui",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1468,6 +1449,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "36820e9051aca1014ddc75770aab4d68bc1e9e632f0f5627c4086bc216fb583b"
 dependencies = [
  "ttf-parser",
+]
+
+[[package]]
+name = "pad-battery-core"
+version = "0.1.0"
+dependencies = [
+ "thiserror 1.0.69",
+ "windows",
+]
+
+[[package]]
+name = "pad-battery-widget"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "pad-battery-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

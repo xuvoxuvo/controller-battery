@@ -1,8 +1,8 @@
 //! List Bluetooth devices that expose a battery level.
 //!
-//! Usage: cargo run -p battery-core --example bt_battery
+//! Usage: cargo run -p pad-battery-core --example bt_battery
 
-use battery_core::bluetooth::{enumerate, looks_like_controller};
+use pad_battery_core::bluetooth::{enumerate, looks_like_controller};
 
 fn main() {
     let devices = enumerate();

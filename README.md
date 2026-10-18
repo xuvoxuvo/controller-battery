@@ -1,115 +1,103 @@
-# Controller Battery
+# PadBattery
 
-一个常驻桌面的小卡片，用来查看手柄电量。
+[![CI](https://github.com/xuvoxuvo/pad-battery/actions/workflows/ci.yml/badge.svg)](https://github.com/xuvoxuvo/pad-battery/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- **PlayStation DualSense / DualSense Edge**：走 HID 协议直接读，精度 10%；
-- **Xbox / XInput 兼容手柄**（含 8BitDo 等）：走 XInput，精度是「空 / 低 / 中 / 满」四档；
-- 单个 exe，不需要安装运行时，Win10/11 直接运行。
-
-> 项目早期版本是一个 PowerShell 脚本，保留在 [`legacy/powershell`](legacy/powershell) 里作参考，不再维护。
+一个常驻桌面的小卡片，随时看一眼手柄还剩多少电。单个 exe，不装运行时，Win10/11 直接跑。
 
 ![界面](docs/images/widget.png)
 
-## 状态
+## 特性
 
-`0.1.0` 开发中：核心协议层、Windows HID / XInput 后端、悬浮窗已完成；正在做真机联调。
+- **PlayStation DualSense / DualSense Edge**：直接解析 HID 报文，电量、充电状态、USB/蓝牙一目了然；
+- **Xbox / XInput 兼容手柄**：读 XInput 电量档位（空/低/中/满），支持 8BitDo 等第三方手柄；
+- **蓝牙手柄**：读取 Windows 的 BLE 电池属性（标准 Battery Service），精确到 1%；
+- **多手柄同时显示**：每只手柄一行，窗口高度自动适配；
+- 无边框、置顶、可拖动，位置自动记忆；
+- 单文件约 3.7 MB，零运行时依赖。
+
+## 支持的设备
+
+| 设备 | 连接 | 电量来源 | 精度 |
+| --- | --- | --- | --- |
+| DualSense（`054C:0CE6`） | USB / 蓝牙 | HID `status[0]` | 10% |
+| DualSense Edge（`054C:0DF2`） | USB / 蓝牙 | HID `status[0]` | 10% |
+| Xbox 手柄 | USB / 无线适配器 | XInput | 四档 |
+| 8BitDo 等 XInput 兼容手柄 | 2.4G 接收器 | XInput | 四档（部分型号不提供） |
+| 8BitDo 等 BLE 手柄 | 蓝牙 | BLE Battery Service | 1% |
+
+## 使用
+
+从 [Releases](https://github.com/xuvoxuvo/pad-battery/releases) 下载 `pad-battery.exe`，双击即可。
+
+- 左键拖动换位置，位置记在 `%LOCALAPPDATA%\PadBattery\settings.json`；
+- 右键菜单 → 退出；
+- 某一行变灰显示「空闲」，表示手柄暂时停止上报，数字是最后一次读数。
 
 ## 构建
 
-本机工具链都装在 `C:\App` 下（按软件分目录）：
+需要 Rust 1.75+：
 
-| 工具 | 路径 |
-| --- | --- |
-| Git | `C:\App\Git` |
-| Rust（rustup + cargo） | `C:\App\Rust` |
-| MinGW-w64（GNU 工具链的链接器） | `C:\App\mingw64` |
+```powershell
+cargo build --release
+# 产物：target\release\pad-battery.exe
+```
 
-一键构建：
+或使用脚本（本机工具链位于 `C:\App`）：
 
 ```powershell
 .\scripts\build.ps1
-# 产物：target\release\controller-battery.exe（约 3.7 MB，单文件、无运行时依赖）
 ```
 
 运行测试：
 
 ```powershell
-cargo test
+cargo test --workspace
 ```
-
-## 使用
-
-双击 `controller-battery.exe`，桌面出现浮窗：
-
-- **每个手柄一行**，窗口高度随设备数量自动变化；
-- 左键拖动移动位置，位置会记住；
-- 右键菜单 → 退出；
-- 手柄空闲时该行显示灰色「空闲」，表示手柄暂时不再上报，数字是最后一次读数。
-
-## 支持的设备
-
-| 设备 | 后端 | 电量精度 | 充电状态 |
-| --- | --- | --- | --- |
-| DualSense（PID `0x0CE6`） | HID | 10%（11 档） | 有 |
-| DualSense Edge（PID `0x0DF2`） | HID | 10%（11 档） | 有 |
-| Xbox 官方手柄 | XInput | 四档 | 有线/无线 |
-| 8BitDo 等 Xbox 兼容手柄 | XInput | 四档 | 视固件而定 |
-
-目前只实现了 Windows 后端；协议解析层（`battery-core::dualsense`）与平台无关，Linux/macOS 后端见「路线图」。
 
 ## 电量精度
 
-**DualSense 只能做到 10% 一档，这是硬件限制，不是软件取整。**
+DualSense 上报的是 **0–10 的档位**（每档 10%），没有更细的百分比，所以本项目显示档位中点（档位 2 → 25%，真实区间 20–30%）。这是硬件限制，不是软件取整。
 
-手柄上报的是 0–10 的档位（每档 10%），没有更细的百分比字段。本项目显示档位中点，例如档位 2 → 25%，真实区间是 20%–30%。想再精确只能靠外部库仑计。
-
-XInput 手柄更粗：只有空 / 低 / 中 / 满四档，映射成 5% / 25% / 60% / 100% 仅用于展示。
+XInput 更粗，只有空/低/中/满四档；BLE 手柄则是真实的 1% 百分比。
 
 ## 已知限制
 
-- 蓝牙下 DualSense 可能发「简化报文」，其中的电量字段不刷新。程序会以读写方式打开设备并补发一次空操作报文，让手柄切回全量报文；如果仍然只能拿到简化报文，界面显示 `≈` 和「状态未知」；
-- 手柄空闲会停止上报，插拔充电线本身不触发刷新，需要按一下键或推一下摇杆；
-- 部分第三方 XInput 手柄（如 8BitDo 猎2代在 XInput 模式下）只上报「有线 / 满」，拿不到真实电量，界面显示 `--` 与「有线」。
+- 手柄空闲时会停止上报，插拔充电线本身不触发刷新，需要按一下键或推一下摇杆；
+- 蓝牙下的 DualSense 有时会发「简化报文」，其中电量字段不刷新；程序会自动请求切回全量报文，失败时显示 `≈` 和「状态未知」；
+- 8BitDo Ultimate 2 在 2.4G 模式下不提供电量（XInput 只报「有线/满」，厂商协议里也没有电量命令），切到蓝牙即可看到精确值。
 
-  实测 8BitDo 猎2代（VID `0x2DC8` / PID `0x310B`）：
-
-  | 接口 | 结果 |
-  | --- | --- |
-  | XInput | `batteryType=1`（有线）、`batteryLevel=3`（满），无真实电量 |
-  | HID `ig_00` | 活跃时 680 条/秒、15 字节，只含摇杆轴 |
-  | 其它 HID / 特性报文 | 无数据、无可用特性报文 |
-
-  2.4G 模式下没有电量通道：XInput 只报 `wired/full`，厂商 `0x81` 命令集里也没有电量命令（详见 [docs/protocol.md](docs/protocol.md)）。
-
-  **切到蓝牙模式就能拿到精确电量**：手柄暴露标准 BLE Battery Service（`0x180F`），Windows 把它读成 `DEVPKEY_Bluetooth_Battery`，本项目直接读这个属性（与系统「蓝牙和设备」页是同一个数字），实测 84%。
+更多细节见 [docs/protocol.md](docs/protocol.md)。
 
 ## 路线图
 
-- [ ] 8BitDo 等第三方手柄的厂商 HID 电量协议（需要真机抓包）
-- [ ] 托盘图标 / 开机自启
 - [ ] Linux（hidraw + evdev）与 macOS（IOHIDManager）后端
-- [ ] 多手柄切换（同时连接多个手柄时显示哪一个）
-- [ ] GitHub Actions 自动构建与 release 附件
+- [ ] 托盘图标 / 开机自启
+- [ ] 更多厂商协议（DualShock 4、Switch Pro 等）
+- [ ] 低电量提醒
 
-## 开发
+## 项目结构
 
 ```
-Cargo.toml                  workspace
-crates/battery-core/        协议与设备访问（可单测）
-crates/battery-widget/      egui 界面
-docs/protocol.md            DualSense 报文实测记录
-docs/architecture.md        架构说明
-legacy/powershell/          早期 PowerShell 版本
+crates/pad-battery-core/     协议解析与设备访问（可单测）
+  ├─ dualsense.rs            DualSense 报文解码
+  ├─ hid.rs                  Windows HID（SetupAPI）
+  ├─ xinput.rs               XInput 电量
+  └─ bluetooth.rs            BLE 电池属性
+crates/pad-battery-widget/   egui 界面与采集线程
+docs/protocol.md             报文实测记录
+docs/architecture.md         架构说明
+docs/legacy/powershell/      早期 PowerShell 版本（仅存档）
 ```
 
-调试真机时可以直接跑探针：
+调试真机时可以跑探针：
 
 ```powershell
-cargo run -p battery-core --example probe
+cargo run -p pad-battery-core --example probe          # HID + XInput 概览
+cargo run -p pad-battery-core --example bt_battery     # BLE 电池
+cargo run -p pad-battery-core --example probe_8bitdo   # 8BitDo 厂商通道
 ```
-
-它会列出系统里的 HID 设备、DualSense 的报文解码结果，以及 XInput 槽位。
 
 ## 许可证
 
-MIT，见 [LICENSE](LICENSE)。
+[MIT](LICENSE)

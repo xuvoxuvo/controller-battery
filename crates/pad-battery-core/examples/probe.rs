@@ -1,10 +1,10 @@
 //! Manual probe: enumerate controllers and print what the system reports.
 //!
-//! Run with: cargo run -p battery-core --example probe
+//! Run with: cargo run -p pad-battery-core --example probe
 
-use battery_core::dualsense::decode_input_report;
-use battery_core::hid::{enumerate_all, enumerate_dualsense, HidDevice};
-use battery_core::xinput;
+use pad_battery_core::dualsense::decode_input_report;
+use pad_battery_core::hid::{enumerate_all, enumerate_dualsense, HidDevice};
+use pad_battery_core::xinput;
 
 fn main() {
     let all = enumerate_all();

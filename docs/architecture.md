@@ -13,13 +13,13 @@
 .
 ├─ Cargo.toml              # workspace
 ├─ crates/
-│  ├─ battery-core/        # 设备与协议层（可单测，无 UI）
+│  ├─ pad-battery-core/        # 设备与协议层（可单测，无 UI）
 │  │  └─ src/
 │  │     ├─ model.rs       # BatteryReading 等公共类型
 │  │     ├─ dualsense.rs   # DualSense 报文解码
 │  │     ├─ hid.rs         # Windows HID 枚举/读取（SetupAPI + hid.dll）
 │  │     └─ xinput.rs      # Windows XInput 后端
-│  └─ battery-widget/      # egui 界面 + 采集线程
+│  └─ pad-battery-widget/      # egui 界面 + 采集线程
 ├─ docs/
 │  ├─ protocol.md          # 协议实测记录
 │  └─ architecture.md      # 本文
@@ -39,7 +39,7 @@
 
 ## 后端接口
 
-`battery-core` 目前提供两个函数式后端：
+`pad-battery-core` 目前提供两个函数式后端：
 
 | 后端 | 平台 | 说明 |
 | --- | --- | --- |
@@ -56,19 +56,19 @@
 ## 界面
 
 * `egui`/`eframe` 立即模式 UI，单窗口、无边框、置顶、可拖动；
-* 位置保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
+* 位置保存在 `%LOCALAPPDATA%\PadBattery\settings.json`；
 * 只依赖系统 DLL，不引入 WebView，因此在 LTSC / 精简系统上也能跑。
 
 ## 发布
 
 ```powershell
 cargo build --release
-# 产物：target\release\controller-battery.exe
+# 产物：target\release\pad-battery.exe
 ```
 
 体积目标：单个 exe < 10 MB，零运行时依赖。
 
 ## 测试
 
-* 协议解码有真实报文样本的单元测试（`cargo test -p battery-core`）；
+* 协议解码有真实报文样本的单元测试（`cargo test -p pad-battery-core`）；
 * HID/XInput 后端依赖真实设备，后续用 8BitDo 猎2代等硬件做手动验证。
