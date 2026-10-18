@@ -43,7 +43,7 @@ cargo build --release
 # 产物：target\release\controller-battery.exe
 ```
 
-或使用脚本（本机工具链位于 `C:\App`）：
+或使用脚本（`cargo` 在 PATH 中，或用 `CARGO_EXE` 指定）：
 
 ```powershell
 .\scripts\build.ps1
@@ -54,6 +54,8 @@ cargo build --release
 ```powershell
 cargo test --workspace
 ```
+
+开发、调试与发布流程见 [docs/development.md](docs/development.md)。
 
 ## 电量精度
 
