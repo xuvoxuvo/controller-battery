@@ -15,7 +15,7 @@ fn parse_hex(value: &str) -> Option<u16> {
 fn main() {
     let mut args = std::env::args().skip(1);
     let vid = args.next().and_then(|v| parse_hex(&v));
-    let pid = args.next().and_then(|v| parse_hex(&v));
+    let pid = args.next().filter(|v| v != "-").and_then(|v| parse_hex(&v));
     let seconds: u64 = args.next().and_then(|s| s.parse().ok()).unwrap_or(20);
 
     let interfaces: Vec<_> = enumerate_all()
