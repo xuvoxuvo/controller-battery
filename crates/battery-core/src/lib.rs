@@ -11,6 +11,8 @@ pub mod dualsense;
 pub mod model;
 
 #[cfg(windows)]
+pub mod bluetooth;
+#[cfg(windows)]
 pub mod hid;
 #[cfg(windows)]
 pub mod xinput;

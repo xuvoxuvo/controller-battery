@@ -52,6 +52,19 @@ fn main() {
                 println!("  (open failed)");
                 break;
             };
+            if i == 0 {
+                match device.caps() {
+                    Some(caps) => println!(
+                        "  caps: usagePage=0x{:04X} usage=0x{:04X} in={} out={} feature={}",
+                        caps.UsagePage,
+                        caps.Usage,
+                        caps.InputReportByteLength,
+                        caps.OutputReportByteLength,
+                        caps.FeatureReportByteLength
+                    ),
+                    None => println!("  caps: unavailable"),
+                }
+            }
             match read_with_timeout(device, Duration::from_millis(700)) {
                 Some((n, data)) => {
                     let hex: String = data[..n.min(40)]

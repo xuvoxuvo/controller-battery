@@ -18,6 +18,10 @@
 - 窗口真正透明，圆角不再出现深色方块；
 - 同时连接多个手柄时每个手柄各占一行（此前只显示优先级最高的一个）。
 
+### Added
+
+- 蓝牙手柄电量：读取 Windows 的 `DEVPKEY_Bluetooth_Battery`（BLE Battery Service），8BitDo Ultimate 2 蓝牙模式可显示精确百分比。
+
 ### Changed
 
 - 早期 PowerShell 版本移动到 `legacy/powershell`，不再维护。

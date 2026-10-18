@@ -14,7 +14,8 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
 };
 use windows::Win32::Devices::HumanInterfaceDevice::{
-    HidD_GetAttributes, HidD_GetFeature, HIDD_ATTRIBUTES,
+    HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetFeature, HidD_GetPreparsedData,
+    HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA,
 };
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
 use windows::Win32::Storage::FileSystem::{
@@ -239,6 +240,20 @@ impl HidDevice {
         unsafe {
             WriteFile(self.handle, Some(data), Some(&mut written), None).is_ok()
                 && written as usize == data.len()
+        }
+    }
+
+    /// Report descriptor capabilities (usage page, report lengths).
+    pub fn caps(&self) -> Option<HIDP_CAPS> {
+        unsafe {
+            let mut preparsed = PHIDP_PREPARSED_DATA::default();
+            if !HidD_GetPreparsedData(self.handle, &mut preparsed).as_bool() {
+                return None;
+            }
+            let mut caps = HIDP_CAPS::default();
+            let status = HidP_GetCaps(preparsed, &mut caps);
+            let _ = HidD_FreePreparsedData(preparsed);
+            (status.0 == 0x0011_0000).then_some(caps) // HIDP_STATUS_SUCCESS
         }
     }
 

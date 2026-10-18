@@ -29,6 +29,8 @@ pub enum ChargeState {
     BatteryError,
     /// Cabled, but the controller does not expose a charge state (XInput wired).
     Wired,
+    /// Only a battery level is known (Bluetooth Battery Service).
+    LevelOnly,
     Unknown,
 }
 
@@ -40,6 +42,7 @@ impl ChargeState {
             ChargeState::Full => "已充满",
             ChargeState::BatteryError => "电池异常",
             ChargeState::Wired => "有线",
+            ChargeState::LevelOnly => "仅电量",
             ChargeState::Unknown => "状态未知",
         }
     }
@@ -52,6 +55,8 @@ pub enum Precision {
     Buckets10,
     /// XInput only exposes empty/low/medium/full.
     Coarse,
+    /// Exact percentage from the Bluetooth Battery Service.
+    Exact,
 }
 
 impl Precision {
@@ -59,6 +64,7 @@ impl Precision {
         match self {
             Precision::Buckets10 => "10%",
             Precision::Coarse => "粗略",
+            Precision::Exact => "1%",
         }
     }
 }

@@ -260,10 +260,13 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     let degraded = state.degraded;
     let muted = Color32::from_rgb(150, 156, 165);
 
-    let header = if reading.transport == battery_core::Transport::Unknown {
-        reading.device.clone()
+    // Long product names (e.g. "8BitDo Ultimate 2 Wireless") would collide with
+    // the percentage, so trim them and show the transport on the state line.
+    let header = if reading.device.chars().count() > 18 {
+        let trimmed: String = reading.device.chars().take(17).collect();
+        format!("{trimmed}…")
     } else {
-        format!("{} · {}", reading.device, reading.transport.label())
+        reading.device.clone()
     };
     painter.text(
         egui::pos2(card.left() + 16.0, top + 5.0),
@@ -294,18 +297,23 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
         },
     );
 
-    let state_label = if stale {
+    let core_label = if stale {
         "空闲"
     } else if degraded {
         "状态未知"
     } else {
         reading.state.label()
     };
+    let state_label = if reading.transport == battery_core::Transport::Unknown {
+        core_label.to_string()
+    } else {
+        format!("{} · {core_label}", reading.transport.label())
+    };
     let accent = accent_color(reading, degraded, stale);
     painter.text(
         egui::pos2(card.left() + 16.0, top + 30.0),
         Align2::LEFT_CENTER,
-        state_label,
+        &state_label,
         FontId::proportional(10.0),
         if stale || degraded { muted } else { accent },
     );
