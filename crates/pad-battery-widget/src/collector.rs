@@ -228,9 +228,10 @@ fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
             if !pad_battery_core::bluetooth::looks_like_controller(&device.name) {
                 continue;
             }
-            if xinput_names.iter().any(|name| {
-                name.contains(&device.name) || device.name.contains(name.as_str())
-            }) {
+            if xinput_names
+                .iter()
+                .any(|name| name.contains(&device.name) || device.name.contains(name.as_str()))
+            {
                 continue;
             }
             let key = format!("ble:{}", device.instance_id);

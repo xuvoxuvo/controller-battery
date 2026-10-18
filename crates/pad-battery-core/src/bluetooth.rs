@@ -59,7 +59,6 @@ pub fn enumerate() -> Vec<BleBattery> {
             }
             index += 1;
 
-
             let Some(percent) = battery_of(set, &info) else {
                 continue;
             };
@@ -80,7 +79,6 @@ pub fn enumerate() -> Vec<BleBattery> {
 
     found
 }
-
 
 fn battery_of(
     set: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
