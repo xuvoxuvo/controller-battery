@@ -16,7 +16,7 @@ use battery_core::model::{BatteryReading, ChargeState, Freshness, Precision, Tra
 use battery_core::xinput;
 
 /// How long an entry stays visible after its last update.
-const ENTRY_TTL: Duration = Duration::from_secs(8);
+const ENTRY_TTL: Duration = Duration::from_secs(10);
 /// A reading older than this is shown as "idle".
 pub const STALE_AFTER: Duration = Duration::from_secs(5);
 /// Bluetooth battery values are polled, so they may be older than that.
@@ -68,10 +68,13 @@ impl Shared {
         self.devices.remove(key);
     }
 
+    /// Drop entries that have been silent for a while. The grace period keeps
+    /// a controller that briefly stops reporting from making the card flicker.
     fn prune(&mut self) {
         let now = Instant::now();
-        self.devices
-            .retain(|_, state| now.duration_since(state.last_update) < ENTRY_TTL);
+        self.devices.retain(|_, state| {
+            now.duration_since(state.last_update) < state.stale_after + ENTRY_TTL
+        });
     }
 }
 
@@ -86,7 +89,8 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || loop {
         let controller = enumerate_dualsense().into_iter().next();
         let Some(controller) = controller else {
-            state.lock().unwrap().remove("dualsense");
+            // Do not remove the row here: a sleeping controller disappears for
+            // a moment and the UI should not collapse. `prune` retires it.
             std::thread::sleep(Duration::from_millis(1200));
             continue;
         };
@@ -168,18 +172,9 @@ fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
                 .upsert(&key, reading, false, BLE_STALE_AFTER);
         }
 
-        // Drop entries for devices that disappeared.
-        let mut shared = state.lock().unwrap();
-        let stale: Vec<String> = shared
-            .devices
-            .keys()
-            .filter(|k| k.starts_with("ble:") && !seen.contains(k))
-            .cloned()
-            .collect();
-        for key in stale {
-            shared.remove(&key);
-        }
-        drop(shared);
+        // Stale BLE entries are retired by `prune`; `seen` is only used to keep
+        // polling the same set of devices.
+        let _ = &seen;
 
         std::thread::sleep(Duration::from_secs(10));
     });

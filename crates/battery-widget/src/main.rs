@@ -19,7 +19,6 @@ fn main() -> eframe::Result<()> {
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()
-        .with_resizable(false)
         .with_taskbar(false);
 
     if let (Some(x), Some(y)) = (settings.window_x, settings.window_y) {

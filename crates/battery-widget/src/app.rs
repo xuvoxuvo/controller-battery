@@ -18,8 +18,8 @@ use crate::settings::Settings;
 
 const WIDTH: f32 = 230.0;
 const PAD: f32 = 10.0;
-const ROW_HEIGHT: f32 = 44.0;
-const EMPTY_HEIGHT: f32 = 86.0;
+const ROW_HEIGHT: f32 = 48.0;
+const EMPTY_HEIGHT: f32 = PAD * 2.0 + ROW_HEIGHT;
 /// Show at most this many rows; further devices are summarised.
 const MAX_ROWS: usize = 5;
 const CORNER_RADIUS: f32 = 16.0;
@@ -96,15 +96,17 @@ impl eframe::App for App {
         let devices = collector::snapshot(&self.shared);
         let error = self.shared.lock().unwrap().error.clone();
 
-        let visible = devices.len().min(MAX_ROWS);
+        let visible = devices.len().min(MAX_ROWS).max(1);
         let overflow = devices.len().saturating_sub(MAX_ROWS);
-        let height = if devices.is_empty() {
-            EMPTY_HEIGHT
-        } else {
-            PAD * 2.0 + visible as f32 * ROW_HEIGHT + if overflow > 0 { 18.0 } else { 0.0 }
-        };
+        // The empty state uses the same height as a single row so that a
+        // controller sleeping and waking does not resize the window.
+        let height =
+            PAD * 2.0 + visible as f32 * ROW_HEIGHT + if overflow > 0 { 18.0 } else { 0.0 };
 
-        if (height - self.window_height).abs() > 0.5 {
+        // Compare against the real window size: the compositor may ignore or
+        // clamp a request, and a stale field would stop us from retrying.
+        let actual = ctx.input(|i| i.viewport().inner_rect).map(|r| r.height());
+        if actual.map_or(true, |h| (h - height).abs() > 0.5) {
             self.window_height = height;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(WIDTH, height)));
         }
@@ -260,18 +262,12 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     let degraded = state.degraded;
     let muted = Color32::from_rgb(150, 156, 165);
 
-    // Long product names (e.g. "8BitDo Ultimate 2 Wireless") would collide with
-    // the percentage, so trim them and show the transport on the state line.
-    let header = if reading.device.chars().count() > 18 {
-        let trimmed: String = reading.device.chars().take(17).collect();
-        format!("{trimmed}…")
-    } else {
-        reading.device.clone()
-    };
+    // The name owns the first line, so it does not have to be truncated even
+    // for long product names like "8BitDo Ultimate 2 Wireless".
     painter.text(
-        egui::pos2(card.left() + 16.0, top + 5.0),
+        egui::pos2(card.left() + 16.0, top + 3.0),
         Align2::LEFT_TOP,
-        header,
+        &reading.device,
         FontId::proportional(10.0),
         muted,
     );
@@ -286,10 +282,10 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
         percent_text
     };
     painter.text(
-        egui::pos2(card.right() - 16.0, top + 16.0),
-        Align2::RIGHT_CENTER,
+        egui::pos2(card.left() + 16.0, top + 18.0),
+        Align2::LEFT_TOP,
         percent_text,
-        FontId::proportional(17.0),
+        FontId::proportional(16.0),
         if stale || degraded {
             muted
         } else {
@@ -311,15 +307,15 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     };
     let accent = accent_color(reading, degraded, stale);
     painter.text(
-        egui::pos2(card.left() + 16.0, top + 30.0),
-        Align2::LEFT_CENTER,
+        egui::pos2(card.right() - 16.0, top + 30.0),
+        Align2::RIGHT_CENTER,
         &state_label,
-        FontId::proportional(10.0),
+        FontId::proportional(9.5),
         if stale || degraded { muted } else { accent },
     );
 
     let bar = Rect::from_min_size(
-        egui::pos2(card.left() + 16.0, top + 38.0),
+        egui::pos2(card.left() + 16.0, top + 42.0),
         Vec2::new(card.width() - 32.0, 3.0),
     );
     painter.rect_filled(bar, 1.5, Color32::from_rgb(58, 58, 66));
