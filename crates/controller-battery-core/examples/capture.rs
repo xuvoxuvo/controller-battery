@@ -1,12 +1,12 @@
 //! Capture HID reports for a vendor/product id and report which bytes change.
 //!
-//! Usage: cargo run -p pad-battery-core --example capture -- <vid_hex> <pid_hex> [seconds]
+//! Usage: cargo run -p controller-battery-core --example capture -- <vid_hex> <pid_hex> [seconds]
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use pad_battery_core::hid::{enumerate_all, HidDevice};
+use controller_battery_core::hid::{enumerate_all, HidDevice};
 
 fn parse_hex(value: &str) -> Option<u16> {
     u16::from_str_radix(value.trim_start_matches("0x"), 16).ok()

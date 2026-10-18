@@ -11,7 +11,7 @@ use std::time::Duration;
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
-use pad_battery_core::model::{BatteryReading, ChargeState};
+use controller_battery_core::model::{BatteryReading, ChargeState};
 
 use crate::collector::{self, DeviceState, Shared};
 use crate::settings::Settings;
@@ -302,7 +302,7 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     } else {
         reading.state.label()
     };
-    let state_label = if reading.transport == pad_battery_core::Transport::Unknown {
+    let state_label = if reading.transport == controller_battery_core::Transport::Unknown {
         core_label.to_string()
     } else {
         format!("{} · {core_label}", reading.transport.label())

@@ -31,7 +31,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "PadBattery",
+        "Controller Battery",
         options,
         Box::new(move |cc| Ok(Box::new(app::App::new(cc, settings)))),
     )

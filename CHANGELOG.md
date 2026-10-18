@@ -6,7 +6,7 @@
 
 ### Added
 
-- Rust workspace：`pad-battery-core`（协议与设备层）+ `pad-battery-widget`（egui 悬浮窗）。
+- Rust workspace：`controller-battery-core`（协议与设备层）+ `controller-battery-widget`（egui 悬浮窗）。
 - DualSense / DualSense Edge 输入报告解码，含真实报文单元测试。
 - Windows HID 枚举与读取（SetupAPI + hid.dll）。
 - XInput 电量读取，支持 Xbox 兼容手柄。

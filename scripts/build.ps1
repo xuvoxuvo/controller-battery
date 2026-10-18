@@ -10,9 +10,9 @@ if (Test-Path 'C:\App\mingw64\bin') {
 $root = Split-Path $PSScriptRoot -Parent
 Push-Location $root
 try {
-    & 'C:\App\Rust\cargo\bin\cargo.exe' build --release -p pad-battery-widget
+    & 'C:\App\Rust\cargo\bin\cargo.exe' build --release -p controller-battery-widget
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed: $LASTEXITCODE" }
-    $exe = Join-Path $root 'target\release\pad-battery.exe'
+    $exe = Join-Path $root 'target\release\controller-battery.exe'
     $size = [math]::Round((Get-Item $exe).Length / 1MB, 1)
     Write-Host "built: $exe ($size MB)"
 } finally {

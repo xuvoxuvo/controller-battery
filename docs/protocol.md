@@ -99,4 +99,4 @@
 * Linux 内核 `drivers/hid/hid-playstation.c`（DualSense 驱动，含 `status[0]` 位定义）
 * `crystal-hidapi` 的 `dualsense_battery.cr` 示例（`buf[54]`）
 * [ascendedent/8bitdo-Linux-Software](https://github.com/ascendedent/8bitdo-Linux-Software)（8BitDo 协议逆向笔记）
-* 本项目 `crates/pad-battery-core/src/dualsense.rs`、`bluetooth.rs` 的实现与单元测试
+* 本项目 `crates/controller-battery-core/src/dualsense.rs`、`bluetooth.rs` 的实现与单元测试

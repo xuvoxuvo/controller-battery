@@ -10,10 +10,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use pad_battery_core::dualsense::{decode_input_report, DecodedReport};
-use pad_battery_core::hid::{enumerate_dualsense, HidDevice};
-use pad_battery_core::model::{BatteryReading, ChargeState, Freshness, Precision, Transport};
-use pad_battery_core::xinput;
+use controller_battery_core::dualsense::{decode_input_report, DecodedReport};
+use controller_battery_core::hid::{enumerate_dualsense, HidDevice};
+use controller_battery_core::model::{
+    BatteryReading, ChargeState, Freshness, Precision, Transport,
+};
+use controller_battery_core::xinput;
 
 /// How long an entry stays visible after its last update.
 const ENTRY_TTL: Duration = Duration::from_secs(10);
@@ -114,7 +116,7 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
             continue;
         };
 
-        let display_name = pad_battery_core::hid::product_name(&controller.path)
+        let display_name = controller_battery_core::hid::product_name(&controller.path)
             .unwrap_or_else(|| "DualSense".to_string());
 
         let mut buffer = [0u8; 128];
@@ -128,7 +130,7 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
             // data) once a host has written to it.
             if decoded.degraded && !asked_for_full_report {
                 asked_for_full_report =
-                    device.write_report(&pad_battery_core::dualsense::noop_output_report());
+                    device.write_report(&controller_battery_core::dualsense::noop_output_report());
             }
 
             let reading = reading_from_dualsense(&decoded, &display_name);
@@ -160,12 +162,14 @@ fn controller_product_names() -> Vec<String> {
     ];
 
     let mut names: Vec<String> = Vec::new();
-    for interface in pad_battery_core::hid::enumerate_all() {
+    for interface in controller_battery_core::hid::enumerate_all() {
         if !VENDORS.contains(&interface.vendor_id) {
             continue;
         }
-        if let Some(name) = pad_battery_core::hid::product_name(&interface.path) {
-            if pad_battery_core::bluetooth::looks_like_controller(&name) && !names.contains(&name) {
+        if let Some(name) = controller_battery_core::hid::product_name(&interface.path) {
+            if controller_battery_core::bluetooth::looks_like_controller(&name)
+                && !names.contains(&name)
+            {
                 names.push(name);
             }
         }
@@ -210,28 +214,9 @@ fn spawn_xinput(state: Arc<Mutex<Shared>>) {
 /// Service; Windows publishes it as a device property, which we poll.
 fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || loop {
-        // A pad that is currently used through its 2.4G dongle also stays
-        // paired over Bluetooth, but Windows keeps serving the last battery
-        // value. Hide the Bluetooth row while the same pad is on XInput.
-        let xinput_names: Vec<String> = {
-            let shared = state.lock().unwrap();
-            shared
-                .devices
-                .iter()
-                .filter(|(key, _)| key.starts_with("xinput:"))
-                .map(|(_, value)| value.reading.device.clone())
-                .collect()
-        };
-
         let mut seen: Vec<String> = Vec::new();
-        for device in pad_battery_core::bluetooth::enumerate() {
-            if !pad_battery_core::bluetooth::looks_like_controller(&device.name) {
-                continue;
-            }
-            if xinput_names
-                .iter()
-                .any(|name| name.contains(&device.name) || device.name.contains(name.as_str()))
-            {
+        for device in controller_battery_core::bluetooth::enumerate() {
+            if !controller_battery_core::bluetooth::looks_like_controller(&device.name) {
                 continue;
             }
             let key = format!("ble:{}", device.instance_id);
@@ -266,7 +251,7 @@ fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
         }
         drop(shared);
 
-        std::thread::sleep(Duration::from_secs(10));
+        std::thread::sleep(Duration::from_secs(3));
     });
 }
 
@@ -299,12 +284,33 @@ fn reading_from_dualsense(decoded: &DecodedReport, name: &str) -> BatteryReading
 }
 
 /// A stable, ordered snapshot for the UI.
+///
+/// Filtering happens here, on every frame, so a pad that switches from
+/// Bluetooth to its 2.4G dongle loses its stale Bluetooth row immediately
+/// instead of waiting for the next Bluetooth poll.
 pub fn snapshot(state: &Arc<Mutex<Shared>>) -> Vec<(String, DeviceState)> {
     let mut shared = state.lock().unwrap();
     shared.prune();
+
+    let xinput_names: Vec<String> = shared
+        .devices
+        .iter()
+        .filter(|(key, _)| key.starts_with("xinput:"))
+        .map(|(_, value)| value.reading.device.clone())
+        .collect();
+
     shared
         .devices
         .iter()
+        .filter(|(key, value)| {
+            if !key.starts_with("ble:") {
+                return true;
+            }
+            let name = &value.reading.device;
+            !xinput_names
+                .iter()
+                .any(|other| other.contains(name) || name.contains(other.as_str()))
+        })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
 }

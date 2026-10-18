@@ -3,8 +3,8 @@
 //! Sends one output report with every "valid flag" cleared (no LED or rumble
 //! change) and then prints the report ids that arrive afterwards.
 
-use pad_battery_core::dualsense::decode_input_report;
-use pad_battery_core::hid::{enumerate_dualsense, HidDevice};
+use controller_battery_core::dualsense::decode_input_report;
+use controller_battery_core::hid::{enumerate_dualsense, HidDevice};
 
 fn crc32(data: &[u8]) -> u32 {
     let mut crc = 0xFFFF_FFFFu32;
@@ -36,7 +36,7 @@ fn main() {
     let controllers = enumerate_dualsense();
     let Some(controller) = controllers
         .iter()
-        .find(|c| c.transport() == pad_battery_core::Transport::Bluetooth)
+        .find(|c| c.transport() == controller_battery_core::Transport::Bluetooth)
     else {
         println!("no Bluetooth DualSense found");
         return;

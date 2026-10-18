@@ -1,8 +1,8 @@
 //! Enumerate feature reports of a HID interface.
 //!
-//! Usage: cargo run -p pad-battery-core --example feature_dump -- <vid_hex> <pid_hex> [max_id]
+//! Usage: cargo run -p controller-battery-core --example feature_dump -- <vid_hex> <pid_hex> [max_id]
 
-use pad_battery_core::hid::{enumerate_all, HidDevice};
+use controller_battery_core::hid::{enumerate_all, HidDevice};
 
 fn parse_hex(value: &str) -> Option<u16> {
     u16::from_str_radix(value.trim_start_matches("0x"), 16).ok()

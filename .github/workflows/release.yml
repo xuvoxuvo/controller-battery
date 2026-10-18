@@ -33,16 +33,16 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart("v")
           if (-not $version) { $version = "dev" }
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item target/release/pad-battery.exe dist/pad-battery.exe
-          Compress-Archive -Path dist/pad-battery.exe -DestinationPath "dist/pad-battery-$version-windows-x64.zip" -Force
+          Copy-Item target/release/controller-battery.exe dist/controller-battery.exe
+          Compress-Archive -Path dist/controller-battery.exe -DestinationPath "dist/controller-battery-$version-windows-x64.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pad-battery-windows-x64
+          name: controller-battery-windows-x64
           path: |
-            dist/pad-battery.exe
-            dist/pad-battery-*-windows-x64.zip
+            dist/controller-battery.exe
+            dist/controller-battery-*-windows-x64.zip
           if-no-files-found: error
 
       - name: Publish release
@@ -50,6 +50,6 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/pad-battery.exe
-            dist/pad-battery-*-windows-x64.zip
+            dist/controller-battery.exe
+            dist/controller-battery-*-windows-x64.zip
           generate_release_notes: true
