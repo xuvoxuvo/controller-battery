@@ -114,6 +114,9 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
             continue;
         };
 
+        let display_name = battery_core::hid::product_name(&controller.path)
+            .unwrap_or_else(|| "DualSense".to_string());
+
         let mut buffer = [0u8; 128];
         let mut asked_for_full_report = false;
         while let Some(read) = device.read_report(&mut buffer) {
@@ -128,7 +131,7 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
                     device.write_report(&battery_core::dualsense::noop_output_report());
             }
 
-            let reading = reading_from_dualsense(&decoded);
+            let reading = reading_from_dualsense(&decoded, &display_name);
             let mut shared = state.lock().unwrap();
             shared.upsert("dualsense", reading, decoded.degraded, STALE_AFTER);
             shared.error = None;
@@ -143,7 +146,7 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
 /// XInput itself does not expose device names, so we borrow the HID product
 /// string (same name Device Manager shows) to label the slot.
 fn controller_product_names() -> Vec<String> {
-    const VENDORS: [u16; 9] = [
+    const VENDORS: [u16; 8] = [
         0x045E, // Microsoft
         0x2DC8, // 8BitDo
         0x057E, // Nintendo
@@ -152,7 +155,8 @@ fn controller_product_names() -> Vec<String> {
         0x28DE, // Valve
         0x0E6F, // PDP
         0x24C6, // PowerA
-        0x054C, // Sony
+                // Sony is deliberately absent: DualSense has its own HID backend and
+                // its name must not be borrowed for an unrelated XInput slot.
     ];
 
     let mut names: Vec<String> = Vec::new();
@@ -161,7 +165,7 @@ fn controller_product_names() -> Vec<String> {
             continue;
         }
         if let Some(name) = battery_core::hid::product_name(&interface.path) {
-            if !names.contains(&name) {
+            if battery_core::bluetooth::looks_like_controller(&name) && !names.contains(&name) {
                 names.push(name);
             }
         }
@@ -185,8 +189,8 @@ fn spawn_xinput(state: Arc<Mutex<Shared>>) {
                 let key = format!("xinput:{slot}");
                 match xinput::poll_slot(slot) {
                     Some(mut reading) => {
-                        if names.len() == 1 {
-                            reading.device = names[0].clone();
+                        if let Some(name) = names.first() {
+                            reading.device = clean_device_name(name);
                         }
                         let mut shared = state.lock().unwrap();
                         shared.upsert(&key, reading, false, STALE_AFTER);
@@ -247,9 +251,21 @@ fn spawn_bluetooth(state: Arc<Mutex<Shared>>) {
     });
 }
 
-fn reading_from_dualsense(decoded: &DecodedReport) -> BatteryReading {
+/// Trim the boilerplate Windows puts around HID product strings, e.g.
+/// `Controller (8BitDo Ultimate 2 Wireless Controller)`.
+pub fn clean_device_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if let Some(rest) = trimmed.strip_prefix("Controller (") {
+        if let Some(inner) = rest.strip_suffix(')') {
+            return inner.trim().to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn reading_from_dualsense(decoded: &DecodedReport, name: &str) -> BatteryReading {
     BatteryReading {
-        device: "DualSense".to_string(),
+        device: clean_device_name(name),
         transport: decoded.transport,
         percent: Some(decoded.percent),
         state: decoded.state,

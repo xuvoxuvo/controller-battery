@@ -12,7 +12,8 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetDeviceInstanceIdW, SetupDiGetDevicePropertyW, DIGCF_PRESENT, SP_DEVINFO_DATA,
 };
 use windows::Win32::Devices::Properties::{
-    DEVPKEY_Device_FriendlyName, DEVPROPKEY, DEVPROP_TYPE_BYTE, DEVPROP_TYPE_STRING,
+    DEVPKEY_Device_DevNodeStatus, DEVPKEY_Device_FriendlyName, DEVPROPKEY, DEVPROP_TYPE_BYTE,
+    DEVPROP_TYPE_STRING, DEVPROP_TYPE_UINT32,
 };
 use windows::Win32::Foundation::HWND;
 
@@ -59,6 +60,13 @@ pub fn enumerate() -> Vec<BleBattery> {
             }
             index += 1;
 
+            // A paired but disconnected device keeps its node (and the last
+            // battery value). Skip those so a pad switched to its 2.4G dongle
+            // does not leave a stale Bluetooth row behind.
+            if is_disconnected(set, &info) {
+                continue;
+            }
+
             let Some(percent) = battery_of(set, &info) else {
                 continue;
             };
@@ -78,6 +86,35 @@ pub fn enumerate() -> Vec<BleBattery> {
     }
 
     found
+}
+
+/// `DN_DEVICE_DISCONNECTED` in `DEVPKEY_Device_DevNodeStatus`.
+const DN_DEVICE_DISCONNECTED: u32 = 0x0000_2000;
+
+fn is_disconnected(
+    set: windows::Win32::Devices::DeviceAndDriverInstallation::HDEVINFO,
+    info: &SP_DEVINFO_DATA,
+) -> bool {
+    let mut value = [0u8; 4];
+    let mut kind = DEVPROP_TYPE_UINT32;
+
+    let ok = unsafe {
+        SetupDiGetDevicePropertyW(
+            set,
+            info,
+            &DEVPKEY_Device_DevNodeStatus,
+            &mut kind,
+            Some(&mut value),
+            None,
+            0,
+        )
+        .is_ok()
+    };
+    if !ok {
+        return false;
+    }
+
+    u32::from_le_bytes(value) & DN_DEVICE_DISCONNECTED != 0
 }
 
 fn battery_of(

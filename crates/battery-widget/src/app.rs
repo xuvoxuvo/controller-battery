@@ -262,13 +262,15 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     let degraded = state.degraded;
     let muted = Color32::from_rgb(150, 156, 165);
 
-    // The name owns the first line, so it does not have to be truncated even
-    // for long product names like "8BitDo Ultimate 2 Wireless".
+    // The name owns the first line; trim it with an ellipsis only when the
+    // measured width would overflow the card.
+    let name_font = FontId::proportional(10.0);
+    let name = fit_width(painter, &reading.device, &name_font, card.width() - 32.0);
     painter.text(
         egui::pos2(card.left() + 16.0, top + 3.0),
         Align2::LEFT_TOP,
-        &reading.device,
-        FontId::proportional(10.0),
+        name,
+        name_font,
         muted,
     );
 
@@ -324,6 +326,32 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
         let filled = Rect::from_min_size(bar.min, Vec2::new(bar.width() * fraction, bar.height()));
         painter.rect_filled(filled, 1.5, accent);
     }
+}
+
+/// Shorten `text` with an ellipsis until it fits `max_width`.
+fn fit_width(painter: &egui::Painter, text: &str, font: &FontId, max_width: f32) -> String {
+    let width = painter
+        .layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+        .size()
+        .x;
+    if width <= max_width {
+        return text.to_owned();
+    }
+
+    let mut chars: Vec<char> = text.chars().collect();
+    while !chars.is_empty() {
+        chars.pop();
+        let mut candidate: String = chars.iter().collect();
+        candidate.push('…');
+        let width = painter
+            .layout_no_wrap(candidate.clone(), font.clone(), Color32::WHITE)
+            .size()
+            .x;
+        if width <= max_width {
+            return candidate;
+        }
+    }
+    "…".to_string()
 }
 
 fn accent_color(reading: &BatteryReading, degraded: bool, stale: bool) -> Color32 {
