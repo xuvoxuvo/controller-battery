@@ -71,7 +71,7 @@ fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> Battery
     };
 
     BatteryReading {
-        device: format!("Xbox 手柄 · 槽位 {}", slot + 1),
+        device: format!("Xbox 手柄 {}", slot + 1),
         transport,
         percent,
         state,

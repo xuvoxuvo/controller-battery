@@ -1,13 +1,15 @@
 //! The floating card UI.
 //!
-//! One row per connected controller; the window grows vertically as devices
-//! come and go.
+//! One compact row per connected controller; the window grows vertically as
+//! devices come and go. The card outline is a superellipse (a "squircle")
+//! rather than a plain rounded rectangle, which avoids the hard corner
+//! transition that reads as aliasing at high DPI.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use eframe::egui;
-use egui::{Align2, Color32, FontId, Rect, Rounding, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 use battery_core::model::{BatteryReading, ChargeState};
 
@@ -15,9 +17,12 @@ use crate::collector::{self, DeviceState, Shared};
 use crate::settings::Settings;
 
 const WIDTH: f32 = 230.0;
-const PAD: f32 = 12.0;
-const ROW_HEIGHT: f32 = 54.0;
-const EMPTY_HEIGHT: f32 = 92.0;
+const PAD: f32 = 10.0;
+const ROW_HEIGHT: f32 = 44.0;
+const EMPTY_HEIGHT: f32 = 86.0;
+/// Show at most this many rows; further devices are summarised.
+const MAX_ROWS: usize = 5;
+const CORNER_RADIUS: f32 = 16.0;
 
 pub struct App {
     shared: Arc<Mutex<Shared>>,
@@ -80,7 +85,7 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 impl eframe::App for App {
-    /// Clear with full transparency so the rounded card keeps its corners.
+    /// Clear with full transparency so the card keeps its corners.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
     }
@@ -91,11 +96,12 @@ impl eframe::App for App {
         let devices = collector::snapshot(&self.shared);
         let error = self.shared.lock().unwrap().error.clone();
 
-        let rows = devices.len().max(1) as f32;
+        let visible = devices.len().min(MAX_ROWS);
+        let overflow = devices.len().saturating_sub(MAX_ROWS);
         let height = if devices.is_empty() {
             EMPTY_HEIGHT
         } else {
-            PAD * 2.0 + rows * ROW_HEIGHT
+            PAD * 2.0 + visible as f32 * ROW_HEIGHT + if overflow > 0 { 18.0 } else { 0.0 }
         };
 
         if (height - self.window_height).abs() > 0.5 {
@@ -122,7 +128,7 @@ impl eframe::App for App {
                     }
                 });
 
-                paint_card(ui, rect, &devices, error.as_deref());
+                paint_card(ui, rect, &devices, error.as_deref(), overflow);
             });
 
         if let Some(pos) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) {
@@ -147,14 +153,57 @@ impl App {
     }
 }
 
-fn paint_card(ui: &egui::Ui, rect: Rect, devices: &[(String, DeviceState)], error: Option<&str>) {
+/// Points of a superellipse-based rounded rectangle.
+///
+/// Unlike a circular arc, the curvature ramps up gradually towards the corner
+/// (the "continuous curvature" look used by Apple), and the polygon has enough
+/// segments that the tessellator's anti-aliasing stays smooth at 200% DPI.
+fn squircle_points(rect: Rect, radius: f32) -> Vec<Pos2> {
+    const EXPONENT: f32 = 4.0;
+    const STEPS_PER_CORNER: usize = 24;
+
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let (left, top, right, bottom) = (rect.left(), rect.top(), rect.right(), rect.bottom());
+
+    // (corner centre x, corner centre y, start angle in degrees)
+    let corners = [
+        (left + r, top + r, 180.0_f32),
+        (right - r, top + r, 270.0),
+        (right - r, bottom - r, 0.0),
+        (left + r, bottom - r, 90.0),
+    ];
+
+    let mut points = Vec::with_capacity(4 * (STEPS_PER_CORNER + 1));
+    for (cx, cy, start) in corners {
+        for step in 0..=STEPS_PER_CORNER {
+            let degrees = start + 90.0 * (step as f32 / STEPS_PER_CORNER as f32);
+            let radians = degrees.to_radians();
+            let (sin, cos) = radians.sin_cos();
+            let x = cx + r * cos.signum() * cos.abs().powf(2.0 / EXPONENT);
+            let y = cy + r * sin.signum() * sin.abs().powf(2.0 / EXPONENT);
+            points.push(egui::pos2(x, y));
+        }
+    }
+    points
+}
+
+fn paint_card(
+    ui: &egui::Ui,
+    rect: Rect,
+    devices: &[(String, DeviceState)],
+    error: Option<&str>,
+    overflow: usize,
+) {
     let painter = ui.painter();
-    painter.rect_filled(rect, Rounding::same(16.0), Color32::from_rgb(22, 22, 26));
-    painter.rect_stroke(
-        rect,
-        Rounding::same(16.0),
-        Stroke::new(1.0_f32, Color32::from_rgb(46, 48, 54)),
-    );
+    // Inset by half a point so the outline stroke is not clipped by the window
+    // edge, which is what produced the hard staircase before.
+    let shape_rect = rect.shrink(0.5);
+    let outline = squircle_points(shape_rect, CORNER_RADIUS);
+    painter.add(egui::Shape::convex_polygon(
+        outline,
+        Color32::from_rgb(22, 22, 26),
+        Stroke::new(0.8_f32, Color32::from_rgb(56, 58, 66)),
+    ));
 
     if devices.is_empty() {
         let (title, hint) = match error {
@@ -162,14 +211,14 @@ fn paint_card(ui: &egui::Ui, rect: Rect, devices: &[(String, DeviceState)], erro
             None => ("未检测到手柄", "蓝牙配对或插 USB 线"),
         };
         painter.text(
-            egui::pos2(rect.left() + 14.0, rect.top() + 16.0),
+            egui::pos2(rect.left() + 16.0, rect.top() + 14.0),
             Align2::LEFT_TOP,
             title,
-            FontId::proportional(15.0),
+            FontId::proportional(14.0),
             Color32::from_rgb(150, 156, 165),
         );
         painter.text(
-            egui::pos2(rect.left() + 14.0, rect.top() + 50.0),
+            egui::pos2(rect.left() + 16.0, rect.top() + 46.0),
             Align2::LEFT_TOP,
             hint,
             FontId::proportional(11.0),
@@ -178,20 +227,30 @@ fn paint_card(ui: &egui::Ui, rect: Rect, devices: &[(String, DeviceState)], erro
         return;
     }
 
-    for (index, (_key, state)) in devices.iter().enumerate() {
+    for (index, (_key, state)) in devices.iter().take(MAX_ROWS).enumerate() {
         let top = rect.top() + PAD + index as f32 * ROW_HEIGHT;
         paint_row(painter, rect, top, state);
 
-        if index + 1 < devices.len() {
-            let y = top + ROW_HEIGHT - 1.0;
+        if index + 1 < devices.len().min(MAX_ROWS) {
+            let y = top + ROW_HEIGHT - 0.5;
             painter.line_segment(
                 [
-                    egui::pos2(rect.left() + 14.0, y),
-                    egui::pos2(rect.right() - 14.0, y),
+                    egui::pos2(rect.left() + 16.0, y),
+                    egui::pos2(rect.right() - 16.0, y),
                 ],
                 Stroke::new(1.0_f32, Color32::from_rgb(34, 36, 42)),
             );
         }
+    }
+
+    if overflow > 0 {
+        painter.text(
+            egui::pos2(rect.left() + 16.0, rect.bottom() - 16.0),
+            Align2::LEFT_CENTER,
+            format!("还有 {overflow} 个设备"),
+            FontId::proportional(9.5),
+            Color32::from_rgb(110, 116, 128),
+        );
     }
 }
 
@@ -202,16 +261,12 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     let muted = Color32::from_rgb(150, 156, 165);
 
     let header = if reading.transport == battery_core::Transport::Unknown {
-        reading.device.to_uppercase()
+        reading.device.clone()
     } else {
-        format!(
-            "{} · {}",
-            reading.device.to_uppercase(),
-            reading.transport.label()
-        )
+        format!("{} · {}", reading.device, reading.transport.label())
     };
     painter.text(
-        egui::pos2(card.left() + 14.0, top + 6.0),
+        egui::pos2(card.left() + 16.0, top + 5.0),
         Align2::LEFT_TOP,
         header,
         FontId::proportional(10.0),
@@ -228,10 +283,10 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
         percent_text
     };
     painter.text(
-        egui::pos2(card.left() + 12.0, top + 20.0),
-        Align2::LEFT_TOP,
+        egui::pos2(card.right() - 16.0, top + 16.0),
+        Align2::RIGHT_CENTER,
         percent_text,
-        FontId::proportional(22.0),
+        FontId::proportional(17.0),
         if stale || degraded {
             muted
         } else {
@@ -248,22 +303,22 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     };
     let accent = accent_color(reading, degraded, stale);
     painter.text(
-        egui::pos2(card.right() - 14.0, top + 32.0),
-        Align2::RIGHT_CENTER,
+        egui::pos2(card.left() + 16.0, top + 30.0),
+        Align2::LEFT_CENTER,
         state_label,
-        FontId::proportional(11.0),
+        FontId::proportional(10.0),
         if stale || degraded { muted } else { accent },
     );
 
     let bar = Rect::from_min_size(
-        egui::pos2(card.left() + 14.0, top + 46.0),
-        Vec2::new(card.width() - 28.0, 3.0),
+        egui::pos2(card.left() + 16.0, top + 38.0),
+        Vec2::new(card.width() - 32.0, 3.0),
     );
-    painter.rect_filled(bar, Rounding::same(2.0), Color32::from_rgb(58, 58, 66));
+    painter.rect_filled(bar, 1.5, Color32::from_rgb(58, 58, 66));
     let fraction = reading.percent.unwrap_or(0) as f32 / 100.0;
     if fraction > 0.0 {
         let filled = Rect::from_min_size(bar.min, Vec2::new(bar.width() * fraction, bar.height()));
-        painter.rect_filled(filled, Rounding::same(2.0), accent);
+        painter.rect_filled(filled, 1.5, accent);
     }
 }
 
