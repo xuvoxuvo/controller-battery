@@ -1,99 +1,135 @@
-//! Background collection thread.
+//! Background collection threads.
 //!
-//! The thread prefers a DualSense over USB, then over Bluetooth, and finally
-//! falls back to XInput. It publishes an immutable snapshot that the UI reads.
+//! Two threads publish into the same snapshot map:
+//! * one for DualSense (HID, blocking reads);
+//! * one for XInput slots (polled).
+//!
+//! The UI shows every device that has reported recently.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use battery_core::dualsense::{decode_input_report, DecodedReport};
 use battery_core::hid::{enumerate_dualsense, HidDevice};
-use battery_core::model::{BatteryReading, Freshness, Precision, Transport};
+use battery_core::model::{BatteryReading, Freshness, Precision};
 use battery_core::xinput;
 
-/// Snapshot shared between the collector thread and the UI.
+/// How long an entry stays visible after its last update.
+const ENTRY_TTL: Duration = Duration::from_secs(8);
+/// A reading older than this is shown as "idle".
+pub const STALE_AFTER: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
+pub struct DeviceState {
+    pub reading: BatteryReading,
+    pub degraded: bool,
+    pub last_update: Instant,
+}
+
+impl DeviceState {
+    pub fn is_stale(&self) -> bool {
+        self.last_update.elapsed() > STALE_AFTER
+    }
+}
+
 #[derive(Default)]
 pub struct Shared {
-    pub reading: Option<BatteryReading>,
-    /// The last report was the stale "simplified" Bluetooth report.
-    pub degraded: bool,
+    /// Ordered by device key so rows do not jump around.
+    pub devices: BTreeMap<String, DeviceState>,
     pub error: Option<String>,
-    pub last_update: Option<Instant>,
 }
 
 impl Shared {
-    /// `true` when no report arrived for `timeout`.
-    pub fn is_stale(&self, timeout: Duration) -> bool {
-        match self.last_update {
-            Some(at) => at.elapsed() > timeout,
-            None => true,
-        }
+    fn upsert(&mut self, key: &str, reading: BatteryReading, degraded: bool) {
+        self.devices.insert(
+            key.to_string(),
+            DeviceState {
+                reading,
+                degraded,
+                last_update: Instant::now(),
+            },
+        );
+    }
+
+    fn remove(&mut self, key: &str) {
+        self.devices.remove(key);
+    }
+
+    fn prune(&mut self) {
+        let now = Instant::now();
+        self.devices
+            .retain(|_, state| now.duration_since(state.last_update) < ENTRY_TTL);
     }
 }
 
-/// Start the collector thread.
+/// Start the collector threads.
 pub fn spawn(state: Arc<Mutex<Shared>>) {
+    spawn_dualsense(state.clone());
+    spawn_xinput(state);
+}
+
+fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
     std::thread::spawn(move || loop {
-        if let Some(controller) = pick_dualsense() {
-            if let Some(device) = HidDevice::open(&controller) {
-                read_dualsense(&device, &state);
-                // Device went away (or read failed): re-enumerate shortly.
-                std::thread::sleep(Duration::from_millis(600));
-                continue;
-            }
-        }
-
-        if let Some(reading) = xinput::poll() {
-            publish_xinput(&state, reading);
-            std::thread::sleep(Duration::from_millis(800));
+        let controller = enumerate_dualsense().into_iter().next();
+        let Some(controller) = controller else {
+            state.lock().unwrap().remove("dualsense");
+            std::thread::sleep(Duration::from_millis(1200));
             continue;
+        };
+
+        let Some(device) = HidDevice::open(&controller) else {
+            state.lock().unwrap().error =
+                Some("DualSense 打开失败（可能被其他程序占用）".to_string());
+            std::thread::sleep(Duration::from_millis(1500));
+            continue;
+        };
+
+        let mut buffer = [0u8; 128];
+        let mut asked_for_full_report = false;
+        while let Some(read) = device.read_report(&mut buffer) {
+            let Some(decoded) = decode_input_report(&buffer[..read]) else {
+                continue;
+            };
+
+            // The controller only sends the full report (with live battery
+            // data) once a host has written to it.
+            if decoded.degraded && !asked_for_full_report {
+                asked_for_full_report =
+                    device.write_report(&battery_core::dualsense::noop_output_report());
+            }
+
+            let reading = reading_from_dualsense(&decoded);
+            let mut shared = state.lock().unwrap();
+            shared.upsert("dualsense", reading, decoded.degraded);
+            shared.error = None;
         }
 
-        {
-            let mut shared = state.lock().unwrap();
-            shared.reading = None;
-            shared.error = None;
-            shared.last_update = None;
-            shared.degraded = false;
-        }
-        std::thread::sleep(Duration::from_millis(1200));
+        std::thread::sleep(Duration::from_millis(600));
     });
 }
 
-fn pick_dualsense() -> Option<battery_core::hid::HidController> {
-    let controllers = enumerate_dualsense();
-    controllers
-        .iter()
-        .find(|c| c.transport() == Transport::Usb)
-        .or_else(|| controllers.first())
-        .cloned()
-}
-
-fn read_dualsense(device: &HidDevice, state: &Arc<Mutex<Shared>>) {
-    let mut buffer = [0u8; 128];
-    let mut asked_for_full_report = false;
-    loop {
-        let Some(read) = device.read_report(&mut buffer) else {
-            return;
-        };
-        let Some(decoded) = decode_input_report(&buffer[..read]) else {
-            continue;
-        };
-
-        // The controller only sends the full report (with live battery data)
-        // once a host has written to it; ask for it if we still see the
-        // simplified format.
-        if decoded.degraded && !asked_for_full_report {
-            asked_for_full_report =
-                device.write_report(&battery_core::dualsense::noop_output_report());
+fn spawn_xinput(state: Arc<Mutex<Shared>>) {
+    std::thread::spawn(move || loop {
+        for slot in 0..xinput::MAX_SLOTS {
+            let key = format!("xinput:{slot}");
+            match xinput::poll_slot(slot) {
+                Some(reading) => {
+                    let mut shared = state.lock().unwrap();
+                    shared.upsert(&key, reading, false);
+                }
+                None => {
+                    state.lock().unwrap().remove(&key);
+                }
+            }
         }
-
-        publish_dualsense(state, &decoded);
-    }
+        state.lock().unwrap().prune();
+        std::thread::sleep(Duration::from_millis(800));
+    });
 }
 
-fn publish_dualsense(state: &Arc<Mutex<Shared>>, decoded: &DecodedReport) {
-    let reading = BatteryReading {
+fn reading_from_dualsense(decoded: &DecodedReport) -> BatteryReading {
+    BatteryReading {
         device: "DualSense".to_string(),
         transport: decoded.transport,
         percent: Some(decoded.percent),
@@ -101,23 +137,20 @@ fn publish_dualsense(state: &Arc<Mutex<Shared>>, decoded: &DecodedReport) {
         precision: Precision::Buckets10,
         freshness: Freshness::Live,
         note: if decoded.degraded {
-            Some("蓝牙简化报文，电量不刷新".to_string())
+            Some("简化报文，电量不刷新".to_string())
         } else {
             None
         },
-    };
-
-    let mut shared = state.lock().unwrap();
-    shared.reading = Some(reading);
-    shared.degraded = decoded.degraded;
-    shared.last_update = Some(Instant::now());
-    shared.error = None;
+    }
 }
 
-fn publish_xinput(state: &Arc<Mutex<Shared>>, reading: BatteryReading) {
+/// A stable, ordered snapshot for the UI.
+pub fn snapshot(state: &Arc<Mutex<Shared>>) -> Vec<(String, DeviceState)> {
     let mut shared = state.lock().unwrap();
-    shared.reading = Some(reading);
-    shared.degraded = false;
-    shared.last_update = Some(Instant::now());
-    shared.error = None;
+    shared.prune();
+    shared
+        .devices
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
 }

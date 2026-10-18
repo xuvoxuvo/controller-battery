@@ -1,4 +1,7 @@
 //! The floating card UI.
+//!
+//! One row per connected controller; the window grows vertically as devices
+//! come and go.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -6,17 +9,21 @@ use std::time::Duration;
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Rect, Rounding, Stroke, Vec2};
 
-use battery_core::model::{BatteryReading, ChargeState, Freshness};
+use battery_core::model::{BatteryReading, ChargeState};
 
-use crate::collector::{self, Shared};
+use crate::collector::{self, DeviceState, Shared};
 use crate::settings::Settings;
 
-const STALE_AFTER: Duration = Duration::from_secs(5);
+const WIDTH: f32 = 230.0;
+const PAD: f32 = 12.0;
+const ROW_HEIGHT: f32 = 54.0;
+const EMPTY_HEIGHT: f32 = 92.0;
 
 pub struct App {
     shared: Arc<Mutex<Shared>>,
     settings: Settings,
     last_saved: Option<egui::Pos2>,
+    window_height: f32,
 }
 
 impl App {
@@ -35,6 +42,7 @@ impl App {
             shared,
             settings,
             last_saved: None,
+            window_height: EMPTY_HEIGHT,
         }
     }
 }
@@ -72,17 +80,28 @@ fn install_fonts(ctx: &egui::Context) {
 }
 
 impl eframe::App for App {
+    /// Clear with full transparency so the rounded card keeps its corners.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [0.0, 0.0, 0.0, 0.0]
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(250));
 
-        let (reading, degraded, stale) = {
-            let shared = self.shared.lock().unwrap();
-            (
-                shared.reading.clone(),
-                shared.degraded,
-                shared.is_stale(STALE_AFTER),
-            )
+        let devices = collector::snapshot(&self.shared);
+        let error = self.shared.lock().unwrap().error.clone();
+
+        let rows = devices.len().max(1) as f32;
+        let height = if devices.is_empty() {
+            EMPTY_HEIGHT
+        } else {
+            PAD * 2.0 + rows * ROW_HEIGHT
         };
+
+        if (height - self.window_height).abs() > 0.5 {
+            self.window_height = height;
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(WIDTH, height)));
+        }
 
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
@@ -103,14 +122,9 @@ impl eframe::App for App {
                     }
                 });
 
-                paint_card(ui, rect, reading.as_ref(), degraded, stale);
+                paint_card(ui, rect, &devices, error.as_deref());
             });
 
-        // Remember the position occasionally, in case the window was moved by
-        // the OS (multi-monitor changes, snapping, ...).
-        if self.last_saved.is_none() {
-            self.last_saved = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min);
-        }
         if let Some(pos) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) {
             if self.last_saved != Some(pos) {
                 self.settings.window_x = Some(pos.x);
@@ -133,56 +147,77 @@ impl App {
     }
 }
 
-fn paint_card(
-    ui: &egui::Ui,
-    rect: Rect,
-    reading: Option<&BatteryReading>,
-    degraded: bool,
-    stale: bool,
-) {
+fn paint_card(ui: &egui::Ui, rect: Rect, devices: &[(String, DeviceState)], error: Option<&str>) {
     let painter = ui.painter();
-    let bg = Color32::from_rgb(22, 22, 26);
-    let border = Color32::from_rgb(46, 48, 54);
+    painter.rect_filled(rect, Rounding::same(16.0), Color32::from_rgb(22, 22, 26));
+    painter.rect_stroke(
+        rect,
+        Rounding::same(16.0),
+        Stroke::new(1.0_f32, Color32::from_rgb(46, 48, 54)),
+    );
 
-    painter.rect_filled(rect, Rounding::same(16.0), bg);
-    painter.rect_stroke(rect, Rounding::same(16.0), Stroke::new(1.0_f32, border));
-
-    let Some(reading) = reading else {
+    if devices.is_empty() {
+        let (title, hint) = match error {
+            Some(message) => ("读取失败", message),
+            None => ("未检测到手柄", "蓝牙配对或插 USB 线"),
+        };
         painter.text(
-            egui::pos2(rect.left() + 14.0, rect.top() + 10.0),
+            egui::pos2(rect.left() + 14.0, rect.top() + 16.0),
             Align2::LEFT_TOP,
-            "未检测到手柄",
+            title,
             FontId::proportional(15.0),
             Color32::from_rgb(150, 156, 165),
         );
         painter.text(
-            egui::pos2(rect.left() + 14.0, rect.top() + 48.0),
+            egui::pos2(rect.left() + 14.0, rect.top() + 50.0),
             Align2::LEFT_TOP,
-            "蓝牙配对或插 USB 线",
+            hint,
             FontId::proportional(11.0),
             Color32::from_rgb(110, 116, 128),
         );
         return;
-    };
+    }
 
-    let accent = accent_color(reading, degraded, stale);
+    for (index, (_key, state)) in devices.iter().enumerate() {
+        let top = rect.top() + PAD + index as f32 * ROW_HEIGHT;
+        paint_row(painter, rect, top, state);
+
+        if index + 1 < devices.len() {
+            let y = top + ROW_HEIGHT - 1.0;
+            painter.line_segment(
+                [
+                    egui::pos2(rect.left() + 14.0, y),
+                    egui::pos2(rect.right() - 14.0, y),
+                ],
+                Stroke::new(1.0_f32, Color32::from_rgb(34, 36, 42)),
+            );
+        }
+    }
+}
+
+fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState) {
+    let reading: &BatteryReading = &state.reading;
+    let stale = state.is_stale();
+    let degraded = state.degraded;
     let muted = Color32::from_rgb(150, 156, 165);
 
-    // Header: device + transport.
-    let header = format!(
-        "{} · {}",
-        reading.device.to_uppercase(),
-        reading.transport.label()
-    );
+    let header = if reading.transport == battery_core::Transport::Unknown {
+        reading.device.to_uppercase()
+    } else {
+        format!(
+            "{} · {}",
+            reading.device.to_uppercase(),
+            reading.transport.label()
+        )
+    };
     painter.text(
-        egui::pos2(rect.left() + 14.0, rect.top() + 9.0),
+        egui::pos2(card.left() + 14.0, top + 6.0),
         Align2::LEFT_TOP,
         header,
         FontId::proportional(10.0),
         muted,
     );
 
-    // Big percentage.
     let percent_text = match reading.percent {
         Some(p) => format!("{p}%"),
         None => "--".to_string(),
@@ -193,10 +228,10 @@ fn paint_card(
         percent_text
     };
     painter.text(
-        egui::pos2(rect.left() + 12.0, rect.top() + 24.0),
+        egui::pos2(card.left() + 12.0, top + 20.0),
         Align2::LEFT_TOP,
         percent_text,
-        FontId::proportional(30.0),
+        FontId::proportional(22.0),
         if stale || degraded {
             muted
         } else {
@@ -204,7 +239,6 @@ fn paint_card(
         },
     );
 
-    // State on the right.
     let state_label = if stale {
         "空闲"
     } else if degraded {
@@ -212,18 +246,18 @@ fn paint_card(
     } else {
         reading.state.label()
     };
+    let accent = accent_color(reading, degraded, stale);
     painter.text(
-        egui::pos2(rect.right() - 14.0, rect.top() + 40.0),
+        egui::pos2(card.right() - 14.0, top + 32.0),
         Align2::RIGHT_CENTER,
         state_label,
-        FontId::proportional(13.0),
+        FontId::proportional(11.0),
         if stale || degraded { muted } else { accent },
     );
 
-    // Battery bar.
     let bar = Rect::from_min_size(
-        egui::pos2(rect.left() + 14.0, rect.bottom() - 16.0),
-        Vec2::new(rect.width() - 28.0, 5.0),
+        egui::pos2(card.left() + 14.0, top + 46.0),
+        Vec2::new(card.width() - 28.0, 3.0),
     );
     painter.rect_filled(bar, Rounding::same(2.0), Color32::from_rgb(58, 58, 66));
     let fraction = reading.percent.unwrap_or(0) as f32 / 100.0;
@@ -240,20 +274,10 @@ fn accent_color(reading: &BatteryReading, degraded: bool, stale: bool) -> Color3
     match reading.state {
         ChargeState::Charging => Color32::from_rgb(56, 189, 248),
         ChargeState::Full | ChargeState::Wired => Color32::from_rgb(52, 211, 153),
-        _ => {
-            let pct = reading.percent.unwrap_or(0);
-            if pct >= 50 {
-                Color32::from_rgb(52, 211, 153)
-            } else if pct >= 20 {
-                Color32::from_rgb(251, 191, 36)
-            } else {
-                Color32::from_rgb(248, 113, 113)
-            }
-        }
+        _ => match reading.percent.unwrap_or(0) {
+            p if p >= 50 => Color32::from_rgb(52, 211, 153),
+            p if p >= 20 => Color32::from_rgb(251, 191, 36),
+            _ => Color32::from_rgb(248, 113, 113),
+        },
     }
-}
-
-#[allow(dead_code)]
-fn freshness_label(freshness: Freshness) -> &'static str {
-    freshness.label()
 }

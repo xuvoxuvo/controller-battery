@@ -17,25 +17,27 @@ use crate::model::{BatteryReading, ChargeState, Freshness, Precision, Transport}
 /// Maximum number of XInput slots.
 pub const MAX_SLOTS: u32 = 4;
 
+/// Read one slot, if a controller is connected there.
+pub fn poll_slot(slot: u32) -> Option<BatteryReading> {
+    let mut state = XINPUT_STATE::default();
+    let result = unsafe { XInputGetState(slot, &mut state) };
+    if result != 0 {
+        return None;
+    }
+
+    let mut battery = XINPUT_BATTERY_INFORMATION::default();
+    let result =
+        unsafe { XInputGetBatteryInformation(slot, BATTERY_DEVTYPE_GAMEPAD, &mut battery) };
+    if result != 0 {
+        return None;
+    }
+
+    Some(reading_from_slot(slot, &battery))
+}
+
 /// Poll every XInput slot and return the first connected controller.
 pub fn poll() -> Option<BatteryReading> {
-    for slot in 0..MAX_SLOTS {
-        let mut state = XINPUT_STATE::default();
-        let result = unsafe { XInputGetState(slot, &mut state) };
-        if result != 0 {
-            continue;
-        }
-
-        let mut battery = XINPUT_BATTERY_INFORMATION::default();
-        let result =
-            unsafe { XInputGetBatteryInformation(slot, BATTERY_DEVTYPE_GAMEPAD, &mut battery) };
-        if result != 0 {
-            continue;
-        }
-
-        return Some(reading_from_slot(slot, &battery));
-    }
-    None
+    (0..MAX_SLOTS).find_map(poll_slot)
 }
 
 fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> BatteryReading {

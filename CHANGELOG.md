@@ -13,6 +13,11 @@
 - 悬浮窗：置顶、无边框、可拖动，位置持久化。
 - 文档：`docs/protocol.md`、`docs/architecture.md`。
 
+### Fixed
+
+- 窗口真正透明，圆角不再出现深色方块；
+- 同时连接多个手柄时每个手柄各占一行（此前只显示优先级最高的一个）。
+
 ### Changed
 
 - 早期 PowerShell 版本移动到 `legacy/powershell`，不再维护。

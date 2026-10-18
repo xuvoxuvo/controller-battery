@@ -13,7 +13,9 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetDeviceInterfaceDetailW, DIGCF_DEVICEINTERFACE, DIGCF_PRESENT,
     SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
 };
-use windows::Win32::Devices::HumanInterfaceDevice::{HidD_GetAttributes, HIDD_ATTRIBUTES};
+use windows::Win32::Devices::HumanInterfaceDevice::{
+    HidD_GetAttributes, HidD_GetFeature, HIDD_ATTRIBUTES,
+};
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -238,6 +240,19 @@ impl HidDevice {
             WriteFile(self.handle, Some(data), Some(&mut written), None).is_ok()
                 && written as usize == data.len()
         }
+    }
+
+    /// Read a feature report. The first byte of `buffer` must contain the
+    /// report id; returns the number of bytes the device filled in.
+    pub fn get_feature(&self, buffer: &mut [u8]) -> Option<usize> {
+        let ok = unsafe {
+            HidD_GetFeature(
+                self.handle,
+                buffer.as_mut_ptr() as *mut _,
+                buffer.len() as u32,
+            )
+        };
+        ok.as_bool().then_some(buffer.len())
     }
 
     /// Blocking read of one input report. Returns the number of bytes read.
