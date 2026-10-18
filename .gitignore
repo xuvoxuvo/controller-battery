@@ -16,3 +16,6 @@ desktop.ini
 /publish/
 /dist/
 *.pdb
+
+# Logs
+*.log
