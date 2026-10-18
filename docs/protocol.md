@@ -75,8 +75,28 @@
 
 想更准只能等更细的字段（当前固件未提供），或用库仑计等外部手段，软件层面做不到 1% 精度。
 
-## 5. 参考
+## 5. 8BitDo Ultimate 2 Wireless
+
+实测这台手柄（VID `0x2DC8`）两种连接方式差别很大：
+
+| 模式 | USB PID | 系统视角 | 电量 |
+| --- | --- | --- | --- |
+| 2.4G（接收器） | `0x310B` | XInput 槽位 + 若干 HID 接口 | 无 |
+| 蓝牙 | `0x6012` | BLE HID 手柄（34 字节报文） | 有，精确百分比 |
+
+蓝牙模式能读到电量，是因为手柄暴露了标准的 **BLE Battery Service**（`0x180F`）。Windows 会把它读成设备属性 `DEVPKEY_Bluetooth_Battery`，本项目直接读该属性（与系统「蓝牙和设备」页显示的是同一个数字），实测 84%。
+
+2.4G 模式为什么没有：
+
+* XInput 只返回 `batteryType=wired`、`batteryLevel=full`，没有真实电量；
+* 厂商接口（usage page `0xFF7A`）只有在发送 `0x81` 请求后才会回 `0x02` 响应；
+* 根据公开的逆向资料（[ascendedent/8bitdo-Linux-Software](https://github.com/ascendedent/8bitdo-Linux-Software)），`0x81` 的命令集只有升级、identify、振动、RF 地址读写和产品字符串选择；Ultimate 2 额外有一段 1592 字节的配置镜像读写（`81 04 ...`），内容是人形映射、死区等设置，**没有电量命令**。
+
+所以 2.4G 下拿不到电量不是本项目没实现，而是这条链路不提供。需要看电量时切到蓝牙模式即可。
+
+## 6. 参考
 
 * Linux 内核 `drivers/hid/hid-playstation.c`（DualSense 驱动，含 `status[0]` 位定义）
 * `crystal-hidapi` 的 `dualsense_battery.cr` 示例（`buf[54]`）
-* 本项目 `crates/battery-core/src/dualsense.rs` 的解码实现与单元测试
+* [ascendedent/8bitdo-Linux-Software](https://github.com/ascendedent/8bitdo-Linux-Software)（8BitDo 协议逆向笔记）
+* 本项目 `crates/battery-core/src/dualsense.rs`、`bluetooth.rs` 的实现与单元测试

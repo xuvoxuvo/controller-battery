@@ -79,7 +79,9 @@ XInput 手柄更粗：只有空 / 低 / 中 / 满四档，映射成 5% / 25% / 6
   | HID `ig_00` | 活跃时 680 条/秒、15 字节，只含摇杆轴 |
   | 其它 HID / 特性报文 | 无数据、无可用特性报文 |
 
-  **但切到蓝牙模式后可以拿到精确电量**：手柄会暴露标准的 BLE Battery Service（`0x180F`），Windows 把它读成设备属性 `DEVPKEY_Bluetooth_Battery`，本项目直接读这个属性（与 Windows「蓝牙和设备」页面显示的是同一个数字），例如实测 84%。2.4G 模式下没有这个通道。
+  2.4G 模式下没有电量通道：XInput 只报 `wired/full`，厂商 `0x81` 命令集里也没有电量命令（详见 [docs/protocol.md](docs/protocol.md)）。
+
+  **切到蓝牙模式就能拿到精确电量**：手柄暴露标准 BLE Battery Service（`0x180F`），Windows 把它读成 `DEVPKEY_Bluetooth_Battery`，本项目直接读这个属性（与系统「蓝牙和设备」页是同一个数字），实测 84%。
 
 ## 路线图
 
