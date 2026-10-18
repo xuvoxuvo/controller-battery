@@ -34,11 +34,19 @@ fn main() {
             continue;
         }
 
-        // Identify request used by 8BitDo's configuration software.
-        let request = [0x81u8, 0x05, 0x00, 0x21, 0x01];
+        // Identify request used by 8BitDo's configuration software. Windows
+        // requires the buffer to match OutputReportByteLength exactly.
+        let payload = [0x81u8, 0x05, 0x00, 0x21, 0x01];
+        let out_len = caps
+            .map(|c| c.OutputReportByteLength as usize)
+            .filter(|len| *len >= payload.len())
+            .unwrap_or(payload.len());
+        let mut request = vec![0u8; out_len];
+        request[..payload.len()].copy_from_slice(&payload);
         println!(
-            "  send {:02X?} -> {}",
-            request,
+            "  send {} bytes {:02X?} -> {}",
+            request.len(),
+            &request[..payload.len()],
             device.write_report(&request)
         );
 
