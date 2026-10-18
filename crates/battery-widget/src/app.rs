@@ -57,12 +57,14 @@ fn install_fonts(ctx: &egui::Context) {
         fonts
             .font_data
             .insert("cjk".to_owned(), egui::FontData::from_owned(bytes).into());
+        // Append as a fallback so Latin text keeps the default font and only
+        // CJK glyphs come from the system font.
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             fonts
                 .families
                 .entry(family)
                 .or_default()
-                .insert(0, "cjk".to_owned());
+                .push("cjk".to_owned());
         }
         ctx.set_fonts(fonts);
         return;
@@ -171,7 +173,10 @@ fn paint_card(ui: &egui::Ui, rect: Rect, reading: Option<&BatteryReading>, degra
     );
 
     // Big percentage.
-    let percent_text = format!("{}%", reading.percent.unwrap_or(0));
+    let percent_text = match reading.percent {
+        Some(p) => format!("{p}%"),
+        None => "--".to_string(),
+    };
     let percent_text = if degraded { format!("≈{percent_text}") } else { percent_text };
     painter.text(
         egui::pos2(rect.left() + 12.0, rect.top() + 24.0),

@@ -39,10 +39,12 @@ pub fn poll() -> Option<BatteryReading> {
 }
 
 fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> BatteryReading {
+    // Third-party pads in XInput mode often report "wired" without exposing a
+    // battery level at all, so do not pretend to know the percentage.
     let (percent, state, transport) = if battery.BatteryType == BATTERY_TYPE_WIRED {
-        (100, ChargeState::Wired, Transport::Usb)
+        (None, ChargeState::Wired, Transport::Usb)
     } else if battery.BatteryType == BATTERY_TYPE_DISCONNECTED {
-        (0, ChargeState::Unknown, Transport::Unknown)
+        (None, ChargeState::Unknown, Transport::Unknown)
     } else {
         let percent = if battery.BatteryLevel == BATTERY_LEVEL_EMPTY {
             5
@@ -55,7 +57,7 @@ fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> Battery
         } else {
             50
         };
-        (percent, ChargeState::Discharging, Transport::Unknown)
+        (Some(percent), ChargeState::Discharging, Transport::Unknown)
     };
 
     let kind = if battery.BatteryType == BATTERY_TYPE_ALKALINE {
@@ -67,9 +69,9 @@ fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> Battery
     };
 
     BatteryReading {
-        device: format!("Xbox / XInput 手柄 (槽位 {})", slot + 1),
+        device: format!("Xbox 手柄 · 槽位 {}", slot + 1),
         transport,
-        percent: Some(percent),
+        percent,
         state,
         precision: Precision::Coarse,
         freshness: Freshness::Live,
@@ -87,3 +89,21 @@ pub fn connected_slots() -> usize {
         })
         .count()
 }
+
+/// Debug helper: describe one slot, including raw battery fields.
+pub fn debug_slot(slot: u32) -> Option<String> {
+    let mut state = XINPUT_STATE::default();
+    let connected = unsafe { XInputGetState(slot, &mut state) };
+    if connected != 0 {
+        return None;
+    }
+
+    let mut battery = XINPUT_BATTERY_INFORMATION::default();
+    let result = unsafe { XInputGetBatteryInformation(slot, BATTERY_DEVTYPE_GAMEPAD, &mut battery) };
+
+    Some(format!(
+        "connected, batteryType=0x{:02X}, batteryLevel=0x{:02X} (call result {})",
+        battery.BatteryType.0, battery.BatteryLevel.0, result
+    ))
+}
+

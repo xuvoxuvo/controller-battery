@@ -14,9 +14,9 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
     SP_DEVICE_INTERFACE_DATA, SP_DEVICE_INTERFACE_DETAIL_DATA_W,
 };
 use windows::Win32::Devices::HumanInterfaceDevice::{HidD_GetAttributes, HIDD_ATTRIBUTES};
-use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, HANDLE, HWND};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_SHARE_WRITE,
     OPEN_EXISTING,
 };
 
@@ -192,11 +192,27 @@ pub struct HidDevice {
 
 impl HidDevice {
     /// Open a controller for reading input reports.
+    ///
+    /// Write access is requested first: the DualSense only switches to the
+    /// full (`0x31`) Bluetooth report format once a host opens it for writing.
+    /// If write access is denied (another process owns the device), fall back
+    /// to read-only.
     pub fn open(controller: &HidController) -> Option<Self> {
+        Self::open_with_access(controller, true).or_else(|| Self::open_with_access(controller, false))
+    }
+
+    /// Open a controller, optionally requesting write access (needed to send
+    /// output reports such as "please use the full report format").
+    pub fn open_with_access(controller: &HidController, write: bool) -> Option<Self> {
         unsafe {
+            let access = if write {
+                GENERIC_READ.0 | GENERIC_WRITE.0
+            } else {
+                GENERIC_READ.0
+            };
             let handle = CreateFileW(
                 PCWSTR(wide(&controller.path).as_ptr()),
-                GENERIC_READ.0,
+                access,
                 FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
@@ -211,6 +227,15 @@ impl HidDevice {
         }
     }
 
+    /// Send one output report (e.g. a no-op configuration report).
+    pub fn write_report(&self, data: &[u8]) -> bool {
+        let mut written = 0u32;
+        unsafe {
+            WriteFile(self.handle, Some(data), Some(&mut written), None).is_ok()
+                && written as usize == data.len()
+        }
+    }
+
     /// Blocking read of one input report. Returns the number of bytes read.
     pub fn read_report(&self, buffer: &mut [u8]) -> Option<usize> {
         let mut read = 0u32;
@@ -220,6 +245,10 @@ impl HidDevice {
         Some(read as usize)
     }
 }
+
+// The handle is owned by this value and may be moved to another thread; it is
+// never shared for concurrent reads.
+unsafe impl Send for HidDevice {}
 
 impl Drop for HidDevice {
     fn drop(&mut self) {

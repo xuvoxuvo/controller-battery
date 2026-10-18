@@ -85,6 +85,39 @@ pub fn decode_input_report(report: &[u8]) -> Option<DecodedReport> {
     })
 }
 
+/// PlayStation CRC32 variant used by the DualSense: standard reflected CRC-32
+/// over `seed || data`, seeded with `0xFFFFFFFF` and inverted at the end.
+pub fn playstation_crc32(seed: u8, data: &[u8]) -> u32 {
+    fn update(mut crc: u32, data: &[u8]) -> u32 {
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        crc
+    }
+    let crc = update(0xFFFF_FFFF, &[seed]);
+    !update(crc, data)
+}
+
+/// Build the "no state change" Bluetooth output report.
+///
+/// Every `valid flag` is zero, so LEDs, rumble and audio are untouched; the
+/// message only tells the controller that a host is talking to it. Combined
+/// with opening the device for writing this makes the DualSense switch to the
+/// full `0x31` input report, which carries live battery data.
+pub fn noop_output_report() -> [u8; 78] {
+    let mut report = [0u8; 78];
+    report[0] = 0x31; // output report id (Bluetooth)
+    report[1] = 0x10; // seq_tag
+    report[2] = 0x10; // tag
+    let crc = playstation_crc32(0xA2, &report[..74]);
+    report[74..78].copy_from_slice(&crc.to_le_bytes());
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +197,28 @@ mod tests {
         assert_eq!(bucket_to_percent(2), 25);
         assert_eq!(bucket_to_percent(10), 100);
         assert_eq!(bucket_to_percent(99), 100);
+    }
+
+    #[test]
+    fn crc32_matches_reference_vector() {
+        // Standard CRC-32 check value.
+        let mut crc = 0xFFFF_FFFFu32;
+        for &byte in b"123456789" {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
+            }
+        }
+        assert_eq!(!crc, 0xCBF4_3926);
+    }
+
+    #[test]
+    fn noop_report_has_crc_and_zero_flags() {
+        let report = noop_output_report();
+        assert_eq!(report[0], 0x31);
+        assert!(report[3..74].iter().all(|&b| b == 0));
+        let expected = playstation_crc32(0xA2, &report[..74]);
+        assert_eq!(&report[74..78], &expected.to_le_bytes());
     }
 }

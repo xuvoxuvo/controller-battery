@@ -71,6 +71,7 @@ fn pick_dualsense() -> Option<battery_core::hid::HidController> {
 
 fn read_dualsense(device: &HidDevice, state: &Arc<Mutex<Shared>>) {
     let mut buffer = [0u8; 128];
+    let mut asked_for_full_report = false;
     loop {
         let Some(read) = device.read_report(&mut buffer) else {
             return;
@@ -78,6 +79,14 @@ fn read_dualsense(device: &HidDevice, state: &Arc<Mutex<Shared>>) {
         let Some(decoded) = decode_input_report(&buffer[..read]) else {
             continue;
         };
+
+        // The controller only sends the full report (with live battery data)
+        // once a host has written to it; ask for it if we still see the
+        // simplified format.
+        if decoded.degraded && !asked_for_full_report {
+            asked_for_full_report = device.write_report(&battery_core::dualsense::noop_output_report());
+        }
+
         publish_dualsense(state, &decoded);
     }
 }

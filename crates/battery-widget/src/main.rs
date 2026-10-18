@@ -1,6 +1,10 @@
 //! Controller battery widget — a small always-on-top card showing the battery
 //! level of a connected game controller.
 
+// Release builds must not open a console window; debug builds keep it so that
+// panics and logs stay visible while developing.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod collector;
 mod settings;
