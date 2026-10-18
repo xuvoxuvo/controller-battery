@@ -96,7 +96,7 @@ impl eframe::App for App {
         let devices = collector::snapshot(&self.shared);
         let error = self.shared.lock().unwrap().error.clone();
 
-        let visible = devices.len().min(MAX_ROWS).max(1);
+        let visible = devices.len().clamp(1, MAX_ROWS);
         let overflow = devices.len().saturating_sub(MAX_ROWS);
         // The empty state uses the same height as a single row so that a
         // controller sleeping and waking does not resize the window.
@@ -106,7 +106,7 @@ impl eframe::App for App {
         // Compare against the real window size: the compositor may ignore or
         // clamp a request, and a stale field would stop us from retrying.
         let actual = ctx.input(|i| i.viewport().inner_rect).map(|r| r.height());
-        if actual.map_or(true, |h| (h - height).abs() > 0.5) {
+        if actual.is_none_or(|h| (h - height).abs() > 0.5) {
             self.window_height = height;
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(WIDTH, height)));
         }
