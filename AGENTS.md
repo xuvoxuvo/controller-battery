@@ -51,7 +51,7 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 
 ### XInput
 
-- 只提供空/低/中/满四档；很多第三方手柄（如 8BitDo 2.4G）只报 `batteryType=wired`，此时不要显示 100%，应显示 `--`。
+- 只提供空/低/中/满四档；很多第三方手柄（8BitDo 2.4G、盖世小鸡等）无线连接时也报 `batteryType=wired`。这个值只代表「不上报电量」，**既不等于有线，也不等于 100%**：显示 `--` 与「未报告电量」。
 - XInput 不提供设备名，名称来自同厂商 HID 的 product string（`hid::product_name`）。**不要把 Sony 的 HID 名称借给 XInput 槽位**，会导致名称串号。
 
 ### 蓝牙（BLE）

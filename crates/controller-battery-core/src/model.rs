@@ -27,8 +27,9 @@ pub enum ChargeState {
     Full,
     /// Battery reports an error condition (voltage/temperature/charge error).
     BatteryError,
-    /// Cabled, but the controller does not expose a charge state (XInput wired).
-    Wired,
+    /// XInput reports `WIRED`, which third-party pads use for "no battery
+    /// info" even when they are wireless. Do not claim "wired" from this alone.
+    NotReported,
     /// Only a battery level is known (Bluetooth Battery Service).
     LevelOnly,
     Unknown,
@@ -41,7 +42,7 @@ impl ChargeState {
             ChargeState::Discharging => "使用中",
             ChargeState::Full => "已充满",
             ChargeState::BatteryError => "电池异常",
-            ChargeState::Wired => "有线",
+            ChargeState::NotReported => "未报告电量",
             ChargeState::LevelOnly => "仅电量",
             ChargeState::Unknown => "状态未知",
         }

@@ -42,9 +42,10 @@ pub fn poll() -> Option<BatteryReading> {
 
 fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> BatteryReading {
     // Third-party pads in XInput mode often report "wired" without exposing a
-    // battery level at all, so do not pretend to know the percentage.
+    // battery level at all — including wireless models such as GameSir or an
+    // 8BitDo on its 2.4G dongle. Never claim "wired" from this alone.
     let (percent, state, transport) = if battery.BatteryType == BATTERY_TYPE_WIRED {
-        (None, ChargeState::Wired, Transport::Usb)
+        (None, ChargeState::NotReported, Transport::Unknown)
     } else if battery.BatteryType == BATTERY_TYPE_DISCONNECTED {
         (None, ChargeState::Unknown, Transport::Unknown)
     } else {

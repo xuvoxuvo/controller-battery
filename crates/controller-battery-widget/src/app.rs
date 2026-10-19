@@ -360,7 +360,7 @@ fn accent_color(reading: &BatteryReading, degraded: bool, stale: bool) -> Color3
     }
     match reading.state {
         ChargeState::Charging => Color32::from_rgb(56, 189, 248),
-        ChargeState::Full | ChargeState::Wired => Color32::from_rgb(52, 211, 153),
+        ChargeState::Full => Color32::from_rgb(52, 211, 153),
         _ => match reading.percent.unwrap_or(0) {
             p if p >= 50 => Color32::from_rgb(52, 211, 153),
             p if p >= 20 => Color32::from_rgb(251, 191, 36),
