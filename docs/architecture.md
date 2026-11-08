@@ -17,6 +17,7 @@
 │  │  └─ src/
 │  │     ├─ model.rs       # BatteryReading 等公共类型
 │  │     ├─ dualsense.rs   # DualSense 报文解码
+│  │     ├─ eightbitdo.rs  # 8BitDo DInput 报文（电量/充电）
 │  │     ├─ hid.rs         # Windows HID 枚举/读取（SetupAPI + hid.dll）
 │  │     └─ xinput.rs      # Windows XInput 后端
 │  └─ controller-battery-widget/      # egui 界面 + 采集线程
@@ -29,9 +30,10 @@
 ## 数据流
 
 ```
- HID 线程 ──┐
-            ├─> BatteryReading ──> 共享状态(Mutex) ──> egui 界面（每 250ms 重绘）
- XInput 线程 ┘
+ HID 线程（DualSense）  ──┐
+ HID 线程（8BitDo DInput）─┤
+ XInput 线程             ──┼─> BatteryReading ──> 共享状态(Mutex) ──> egui 界面（每 250ms 重绘）
+ 蓝牙线程                ──┘
 ```
 
 * 采集在后台线程中进行，界面线程只读快照，不阻塞 UI；
@@ -44,8 +46,10 @@
 | 后端 | 平台 | 说明 |
 | --- | --- | --- |
 | `dualsense::decode_input_report` | 全平台（纯解析） | 输入报告 → `DecodedReport` |
-| `hid::DualSenseDevice` | Windows | 枚举/打开/读取报告 |
+| `eightbitdo::decode_power_state` | 全平台（纯解析） | 8BitDo DInput 34 字节报告 → 电量/充电 |
+| `hid::HidDevice` | Windows | 枚举/打开/读取报告 |
 | `xinput::poll` | Windows | 读取 4 个 XInput 槽位的电量 |
+| `bluetooth::enumerate` | Windows | 读取 BLE Battery Service 电量 |
 
 跨平台计划：
 
@@ -58,6 +62,16 @@
 * `egui`/`eframe` 立即模式 UI，单窗口、无边框、置顶、可拖动；
 * 位置保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
 * 只依赖系统 DLL，不引入 WebView，因此在 LTSC / 精简系统上也能跑。
+
+### 托盘图标
+
+`controller-battery-widget/src/tray.rs` 用一个**独立线程 + 隐藏窗口**承接 `Shell_NotifyIcon` 的回调（不子类化 eframe 的窗口）：
+
+* 左键切换卡片显示/隐藏，右键弹菜单（显示卡片 / 隐藏卡片 / 退出）；
+* 每秒读一次 `collector::snapshot`，电量或状态变化时才重建 32×32 电池图标并 `NIM_MODIFY`；
+* 隐藏/显示用 `ShowWindow`，而不是 `ViewportCommand::Visible`：egui 认为窗口一直在，恢复后才会正常重绘；
+* 隐藏前要求 `TRAY_READY`（shell 真的持有图标），否则拒绝隐藏；图标丢失或 Explorer 重启（`TaskbarCreated`）时自动把卡片放回来；
+* 退出时 `on_exit` → `tray::shutdown()` 发 `NIM_DELETE`，避免通知区留下幽灵图标。
 
 ## 发布
 

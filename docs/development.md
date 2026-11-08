@@ -12,6 +12,8 @@ AI 代理请先读根目录的 [AGENTS.md](../AGENTS.md)（架构、命令、约
 
 当前只实现了 Windows 后端，Linux/macOS 需要补 `hidraw` / `IOHIDManager` 后端，见 `docs/architecture.md`。
 
+图标与版本信息由 `crates/controller-battery-widget/build.rs` 在构建时生成：MSVC 需要 Windows SDK 里的 `rc.exe`，GNU 需要 MinGW 的 `windres`。两者都找不到时构建仍会成功，只是 exe 没有图标和版本信息（会打印一条 `cargo:warning`）。
+
 ## 常用命令
 
 ```powershell
@@ -24,27 +26,47 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 或直接运行 `.\scripts\build.ps1`（要求 `cargo` 在 PATH 中，或用 `CARGO_EXE` 指定路径）。
 
+加 `-Install` 会把产物复制到一个普通目录（默认 `%LOCALAPPDATA%\Programs\ControllerBattery`，可用 `-Destination` 改）：
+
+```powershell
+.\scripts\build.ps1 -Install -Destination C:\App\ControllerBattery
+```
+
+这一步不只是图方便：**如果构建目录带 `Low` 完整性标签**（某些沙箱工作区会这样），从里面直接启动的进程也是 Low，`Shell_NotifyIcon` 会被 UIPI 拒绝，托盘图标永远出不来。用 `icacls <目录>` 看到 `Mandatory Label\Low Mandatory Level` 就是这种情况，复制出来的副本会丢掉标签。
+
 ## 真机调试
 
 ```powershell
-cargo run -p controller-battery-core --example probe         # HID + XInput 概览
+cargo run -p controller-battery-core --example probe         # HID + XInput + 8BitDo DInput 概览
 cargo run -p controller-battery-core --example bt_battery    # 蓝牙电池属性
 cargo run -p controller-battery-core --example hid_dump -- <vid_hex> <pid_hex>
+cargo run -p controller-battery-core --example descriptor -- <vid_hex> <pid_hex>
 cargo run -p controller-battery-core --example capture -- <vid_hex> - 20
 cargo run -p controller-battery-core --example probe_8bitdo  # 8BitDo 厂商通道
 ```
 
 `capture` 会打印 20 秒内每个字节的变化次数，适合定位未知手柄的电量字段。
 
+端到端验证采集线程（需要真机接着）：
+
+```powershell
+cargo test -p controller-battery-widget -- --ignored --nocapture dump_live_devices
+```
+
+它会打印 3 秒后界面拿到的快照（设备名、传输方式、电量、状态）。
+
+托盘图标没有自动化测试，但可以模拟点击：托盘线程的隐藏窗口类名是 `ControllerBatteryTrayWindow`，用 `EnumWindows` 找到它后 `PostMessage(hwnd, WM_APP + 1, 0, WM_LBUTTONUP)` 就等于左键点了一下，可以据此验证显示/隐藏是否正常。
+
 ## 目录
 
 ```
 crates/controller-battery-core/     协议与设备访问（无 UI，可单测）
   ├─ dualsense.rs                   DualSense 报文解码
+  ├─ eightbitdo.rs                  8BitDo DInput 报文（电量/充电）
   ├─ hid.rs                         Windows HID（SetupAPI）
   ├─ xinput.rs                      XInput 电量
   └─ bluetooth.rs                   BLE 电池属性
-crates/controller-battery-widget/   egui 界面与采集线程
+crates/controller-battery-widget/   egui 界面、采集线程与托盘图标
 docs/protocol.md                    报文实测记录
 docs/architecture.md                架构说明
 docs/legacy/powershell/             早期 PowerShell 版本（仅存档）
@@ -52,7 +74,7 @@ docs/legacy/powershell/             早期 PowerShell 版本（仅存档）
 
 ## 发布流程
 
-仓库带两个 GitHub Actions 工作流：
+仓库带两个 GitHub Actions 工作流（两者都直接调用 `cargo`，**不经过 `scripts/build.ps1`**；`-Install` 只是本机便利功能，不参与 CI）：
 
 **`.github/workflows/ci.yml`** —— 每次 push / PR：
 

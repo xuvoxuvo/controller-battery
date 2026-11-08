@@ -4,6 +4,37 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-08
+
+### Added
+
+- **8BitDo Ultimate 2 Wireless（DInput）**：解析 `2DC8:6012` 的 34 字节 HID 报文（第 14 字节：bit 7 充电、bit 0–6 电量），读精确电量与充电状态；正常开机（XInput，`2DC8:310B`）时仍按 XInput 显示。
+- **托盘图标**：通知区电池图标 + 悬停 tooltip（手柄名、电量、状态），左键显示/隐藏卡片，右键菜单「显示卡片 / 隐藏卡片 / 退出」；图标轮廓跟随系统浅色/深色主题，退出时主动删除图标。
+- **exe 图标与版本信息**：构建时用与托盘同一份图形生成 16/32/48/256 多尺寸图标，并写入 VERSIONINFO（产品名、版本、公司、版权）；MSVC 走 `rc.exe`、GNU 走 `windres`，缺工具时只告警。
+- **调试工具**：新增 `descriptor` 示例，打印 HID 字段布局（usage page / 位宽 / 逻辑范围）。
+- **构建脚本** `-Install`：把产物复制到普通目录（默认 `%LOCALAPPDATA%\Programs\ControllerBattery`，可用 `-Destination` 改），并检查目标是否仍带 `Low` 完整性标签。
+
+### Changed
+
+- 8BitDo DInput 报文流改为「状态变化 + 500ms 心跳」才发布，避免 1kHz 上报时每秒上千次加锁与字符串分配。
+- 路线图拆分：托盘图标已完成；开机自启（注册表 `Run` 项）作为独立待办。
+- 文档补充：托盘图标的实现约束、进程完整性与沙箱对托盘注册的影响、图标/版本信息的构建方式。
+
+### Fixed
+
+- 修复 8BitDo Ultimate 2 Wireless 处于 DInput 模式（`2DC8:6012`）时完全不被识别的问题：该模式没有 XInput 槽位，现在由独立的 HID 采集线程接管。
+- 修复托盘图标没注册成功时「隐藏到托盘」会让卡片再也找不回来的问题：图标未就绪时禁止隐藏（菜单项置灰），图标丢失（Explorer 重启）时自动把卡片显示回来。
+- 托盘图标注册失败时每 5 秒自动重试，并在菜单里区分「低权限进程」与「shell 未就绪」两种原因；失败诊断写入 `%LOCALAPPDATA%\ControllerBattery\tray.log`（错误码、进程/shell 完整性、会话号）。
+- XInput 的 `batteryType=wired` 不再显示「有线」：部分无线手柄（如盖世小鸡）也报这个值，改为显示「未报告电量」。
+
+### Known issues
+
+- 8BitDo Ultimate 2 在**正常开机**（XInput，`2DC8:310B`）时仍不提供电量（XInput 只报「有线/满」，厂商 `0x81` 命令集无电量命令）；按住 `B` 开机走 DInput、或切到蓝牙，都能读到精确电量。
+- 从带 `Low` 完整性标签的目录启动的 exe 无法注册托盘图标（Windows 的 UIPI 限制），复制到普通目录运行即可。
+- Linux / macOS 后端尚未实现。
+
+## [0.1.0] - 2026-10-19
+
 ### Added
 
 - **DualSense / DualSense Edge**：HID 报文解码，支持 USB（`0x01`，64 字节）、蓝牙全量（`0x31`，78 字节）与蓝牙简化报文（`0x01`，78 字节）三种格式；解析电量档位与充电状态。
@@ -27,8 +58,7 @@
 - 修复 DualSense 蓝牙简化报文导致的电量/充电状态为旧值的问题。
 - 修复设备切换、休眠时窗口尺寸跳变与「未检测到手柄」闪动。
 - 修复切到 2.4G 后残留旧蓝牙行的问题（改为每帧过滤）。
-- XInput 的 atteryType=wired 不再显示「有线」：部分无线手柄（如盖世小鸡）也报这个值，改为显示「未报告电量」。
-- 蓝牙断开判断改用 WinRT BluetoothLEDevice.ConnectionStatus：已配对但断开的设备不再显示，断连约 1 秒内消失。
+- 蓝牙断开判断改用 WinRT `BluetoothLEDevice.ConnectionStatus`：已配对但断开的设备不再显示，断连约 1 秒内消失。
 - 修复设备名被截断、XInput 行错误沿用其他设备名称的问题。
 - 修复 BLE 轮询源被误判为「空闲」的问题（每个数据源独立空闲阈值）。
 
@@ -36,7 +66,3 @@
 
 - 8BitDo Ultimate 2 在 2.4G 模式下不提供电量（XInput 只报「有线/满」，厂商 `0x81` 命令集无电量命令）；切到蓝牙即可读取。
 - Linux / macOS 后端尚未实现。
-
-## [0.1.0] - 计划中
-
-首个公开版本：Windows 上的 DualSense、XInput 与蓝牙手柄电量浮窗。

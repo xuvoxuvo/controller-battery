@@ -11,10 +11,11 @@ fn main() {
     println!("HID interfaces total: {}", all.len());
     for i in &all {
         println!(
-            "  · vid=0x{:04X} pid=0x{:04X} {:?}",
+            "  · vid=0x{:04X} pid=0x{:04X} {:?} {:?}",
             i.vendor_id,
             i.product_id,
-            i.transport()
+            i.transport(),
+            controller_battery_core::hid::product_name(&i.path)
         );
     }
 
@@ -52,6 +53,36 @@ fn main() {
                     break;
                 }
             }
+        }
+    }
+
+    println!("\n8BitDo DInput mode:");
+    let eightbitdo: Vec<_> = all
+        .iter()
+        .filter(|i| controller_battery_core::eightbitdo::is_supported(i))
+        .collect();
+    if eightbitdo.is_empty() {
+        println!("  (none — pad is probably in XInput mode or off)");
+    }
+    for interface in eightbitdo {
+        println!(
+            "  - {:?}",
+            controller_battery_core::hid::product_name(&interface.path)
+        );
+        let Some(device) = HidDevice::open_with_access(interface, false) else {
+            println!("    open failed");
+            continue;
+        };
+        let mut buffer = [0u8; 128];
+        for _ in 0..3 {
+            let Some(read) = device.read_report(&mut buffer) else {
+                println!("    read failed");
+                break;
+            };
+            println!(
+                "    len={read} decoded={:?}",
+                controller_battery_core::eightbitdo::decode_power_state(&buffer[..read])
+            );
         }
     }
 

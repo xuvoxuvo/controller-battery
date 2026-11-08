@@ -77,22 +77,46 @@
 
 ## 5. 8BitDo Ultimate 2 Wireless
 
-实测这台手柄（VID `0x2DC8`）两种连接方式差别很大：
+实测这台手柄（VID `0x2DC8`）在同一只接收器上会以三种身份出现，取决于开机时有没有按着键（固件 1.06 / 接收器 1.04 起支持）：
 
 | 模式 | USB PID | 系统视角 | 电量 |
 | --- | --- | --- | --- |
-| 2.4G（接收器） | `0x310B` | XInput 槽位 + 若干 HID 接口 | 无 |
-| 蓝牙 | `0x6012` | BLE HID 手柄（34 字节报文） | 有，精确百分比 |
+| XInput（正常开机） | `0x310B` | XInput 槽位 + 若干 HID 接口 | 无 |
+| DInput（开机时按住 `B`） | `0x6012` | HID 手柄（34 字节报文） | 有，精确百分比 |
+| Switch（开机时按住 `Y`） | `0x6012` | HID 手柄（Pro Controller 报文） | 无意义，固定 55% |
+| 蓝牙 | `0x6012` | BLE HID + Battery Service | 有，精确百分比 |
 
-蓝牙模式能读到电量，是因为手柄暴露了标准的 **BLE Battery Service**（`0x180F`）。Windows 会把它读成设备属性 `DEVPKEY_Bluetooth_Battery`，本项目直接读该属性（与系统「蓝牙和设备」页显示的是同一个数字），实测 84%。
+> 模式由手柄在开机瞬间决定，接收器只负责转发；想换模式必须**先关机**（长按 Home 3 秒），再按住目标键按 Home 开机。在底座上拿起来不会切换。
 
-2.4G 模式为什么没有：
+DInput 模式的外观和 Steam 里显示的「USB 8Bitdo Ultimate 2 Wireless Controller」一致：它只是一个普通 HID 手柄，**不会出现 XInput 槽位**。仅轮询 XInput 的程序因此完全看不到它——这正是「Steam 能识别、电量卡片空白」的原因。
+
+### DInput 报文的电量字节
+
+34 字节输入报告（报告 ID `0x01`），第 14 字节：
+
+| 位 | 含义 |
+| --- | --- |
+| 0–6 | 电量百分比 `0..=100` |
+| 7 | 充电中标志 |
+
+读数等于 100 时按「已充满」处理（不再区分充电标志）。这份布局与 SDL 的 [`SDL_hidapi_8bitdo.c`](https://github.com/libsdl-org/SDL/blob/main/src/joystick/hidapi/SDL_hidapi_8bitdo.c)（`HIDAPI_Driver8BitDo_HandleStatePacket`，`data[14] >> 7` 与 `data[14] & 0x7f`）一致；第 15 字节起是加速度计/陀螺仪的 16 位小端数据。
+
+实测报文（手柄静止、放电中，`0x62` → 98%）：
+
+```
+01 0F 7F 7F 7F 7F 00 00 00 00 00 00 00 00 62 43 FE F8 FF C6 0F FE FF 0F 00 EB FF ...
+                                          ^^ 电量字节
+```
+
+固件 1.02 只发 12 字节报文，没有电量字段；本项目要求报文长度 ≥ 34 才解码，短报文直接忽略，不做猜测。
+
+### XInput 模式为什么没有电量
 
 * XInput 只返回 `batteryType=wired`、`batteryLevel=full`，没有真实电量；
 * 厂商接口（usage page `0xFF7A`）只有在发送 `0x81` 请求后才会回 `0x02` 响应；
 * 根据公开的逆向资料（[ascendedent/8bitdo-Linux-Software](https://github.com/ascendedent/8bitdo-Linux-Software)），`0x81` 的命令集只有升级、identify、振动、RF 地址读写和产品字符串选择；Ultimate 2 额外有一段 1592 字节的配置镜像读写（`81 04 ...`），内容是人形映射、死区等设置，**没有电量命令**。
 
-所以 2.4G 下拿不到电量不是本项目没实现，而是这条链路不提供。需要看电量时切到蓝牙模式即可。
+所以想在 2.4G 下看电量，就按住 `B` 开机走 DInput；想要原生 XInput（不依赖 Steam Input）则正常开机，此时只能显示「未报告电量」。蓝牙模式下的电量来自 Windows 的 `DEVPKEY_Bluetooth_Battery`（BLE Battery Service），与本项目读到的数字一致。
 
 ## 6. 参考
 

@@ -10,11 +10,16 @@ pub struct Settings {
     pub window_y: Option<f32>,
 }
 
-fn config_path() -> Option<PathBuf> {
+/// `%LOCALAPPDATA%\ControllerBattery` — settings and diagnostics live here.
+pub fn data_dir() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")?;
     let mut dir = PathBuf::from(base);
     dir.push("ControllerBattery");
-    Some(dir.join("settings.json"))
+    Some(dir)
+}
+
+fn config_path() -> Option<PathBuf> {
+    Some(data_dir()?.join("settings.json"))
 }
 
 impl Settings {

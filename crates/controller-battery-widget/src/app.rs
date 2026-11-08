@@ -15,6 +15,7 @@ use controller_battery_core::model::{BatteryReading, ChargeState};
 
 use crate::collector::{self, DeviceState, Shared};
 use crate::settings::Settings;
+use crate::tray;
 
 const WIDTH: f32 = 230.0;
 const PAD: f32 = 10.0;
@@ -29,6 +30,10 @@ pub struct App {
     settings: Settings,
     last_saved: Option<egui::Pos2>,
     window_height: f32,
+    /// eframe's window handle, needed to hide the card from the context menu.
+    window: Option<isize>,
+    /// Hiding runs after the frame, not in the middle of it.
+    hide_requested: bool,
 }
 
 impl App {
@@ -42,12 +47,15 @@ impl App {
 
         let shared = Arc::new(Mutex::new(Shared::default()));
         collector::spawn(shared.clone());
+        let window = tray::spawn(cc, shared.clone());
 
         Self {
             shared,
             settings,
             last_saved: None,
             window_height: EMPTY_HEIGHT,
+            window,
+            hide_requested: false,
         }
     }
 }
@@ -90,6 +98,11 @@ impl eframe::App for App {
         [0.0, 0.0, 0.0, 0.0]
     }
 
+    /// Remove the tray icon before the process goes away.
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        tray::shutdown();
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint_after(Duration::from_millis(250));
 
@@ -125,6 +138,22 @@ impl eframe::App for App {
                 }
 
                 response.context_menu(|ui| {
+                    // Hiding is only safe once the shell owns the icon; a
+                    // sandboxed process cannot register one, and a hidden card
+                    // would then be unreachable.
+                    let hint = if tray::running_low_integrity() {
+                        "当前进程以低权限运行，Windows 不允许注册托盘图标；请从资源管理器双击启动"
+                    } else {
+                        "托盘图标尚未就绪，正在自动重试"
+                    };
+                    if ui
+                        .add_enabled(tray::available(), egui::Button::new("隐藏到托盘"))
+                        .on_disabled_hover_text(hint)
+                        .clicked()
+                    {
+                        self.hide_requested = true;
+                        ui.close_menu();
+                    }
                     if ui.button("退出").clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
@@ -132,6 +161,16 @@ impl eframe::App for App {
 
                 paint_card(ui, rect, &devices, error.as_deref(), overflow);
             });
+
+        // Hide after the frame is painted, not in the middle of it: the card
+        // keeps its last content and the tray icon brings it back.
+        if std::mem::take(&mut self.hide_requested) {
+            if let Some(window) = self.window {
+                if tray::hide(window) {
+                    tray::hint_hidden();
+                }
+            }
+        }
 
         if let Some(pos) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) {
             if self.last_saved != Some(pos) {

@@ -1,8 +1,10 @@
 //! Background collection threads.
 //!
-//! Two threads publish into the same snapshot map:
-//! * one for DualSense (HID, blocking reads);
-//! * one for XInput slots (polled).
+//! Threads publish into the same snapshot map, one per data source:
+//! * DualSense (HID, blocking reads);
+//! * 8BitDo Ultimate 2 Wireless in DInput mode (HID, blocking reads);
+//! * XInput slots (polled);
+//! * Bluetooth LE battery properties (polled).
 //!
 //! The UI shows every device that has reported recently.
 
@@ -11,6 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use controller_battery_core::dualsense::{decode_input_report, DecodedReport};
+use controller_battery_core::eightbitdo;
 use controller_battery_core::hid::{enumerate_dualsense, HidDevice};
 use controller_battery_core::model::{
     BatteryReading, ChargeState, Freshness, Precision, Transport,
@@ -83,6 +86,7 @@ impl Shared {
 /// Start the collector threads.
 pub fn spawn(state: Arc<Mutex<Shared>>) {
     spawn_dualsense(state.clone());
+    spawn_eightbitdo(state.clone());
     spawn_xinput(state.clone());
     spawn_bluetooth(state);
 }
@@ -137,6 +141,84 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
             let mut shared = state.lock().unwrap();
             shared.upsert("dualsense", reading, decoded.degraded, STALE_AFTER);
             shared.error = None;
+        }
+
+        std::thread::sleep(Duration::from_millis(600));
+    });
+}
+
+/// 8BitDo Ultimate 2 Wireless on its USB dongle in DInput mode.
+///
+/// In XInput mode (the pad's default when powered on normally) the same dongle
+/// uses PID `0x310B` and reports no battery at all; in DInput mode (hold `B`
+/// while powering on) it becomes this HID gamepad and the input report carries
+/// an exact percentage.
+fn spawn_eightbitdo(state: Arc<Mutex<Shared>>) {
+    const GONE_GRACE: Duration = Duration::from_secs(3);
+    let mut missing_since: Option<Instant> = None;
+
+    std::thread::spawn(move || loop {
+        let interface = controller_battery_core::hid::enumerate_all()
+            .into_iter()
+            .find(eightbitdo::is_supported);
+
+        let Some(interface) = interface else {
+            match missing_since {
+                Some(since) if since.elapsed() > GONE_GRACE => {
+                    state.lock().unwrap().remove("8bitdo");
+                }
+                Some(_) => {}
+                None => missing_since = Some(Instant::now()),
+            }
+            std::thread::sleep(Duration::from_millis(700));
+            continue;
+        };
+        missing_since = None;
+
+        // Read-only: the pad (and Steam Input) may already own the device for
+        // rumble writes, but HID input reports are delivered to every handle.
+        let Some(device) = HidDevice::open_with_access(&interface, false) else {
+            std::thread::sleep(Duration::from_millis(1000));
+            continue;
+        };
+
+        let name = controller_battery_core::hid::product_name(&interface.path)
+            .map(|name| clean_device_name(&name))
+            .unwrap_or_else(|| "8BitDo 手柄".to_string());
+
+        let mut buffer = [0u8; 128];
+        // The dongle streams at up to 1 kHz; publishing every report would cost
+        // 1000 mutex round-trips and string clones per second for a value that
+        // changes a few times an hour. Publish on change, plus a heartbeat so
+        // the row never looks idle.
+        let mut last_published: Option<(eightbitdo::PowerState, Instant)> = None;
+        while let Some(read) = device.read_report(&mut buffer) {
+            let Some(power) = eightbitdo::decode_power_state(&buffer[..read]) else {
+                continue;
+            };
+
+            let now = Instant::now();
+            let unchanged = last_published.is_some_and(|(last, at)| {
+                last == power && now.duration_since(at) < Duration::from_millis(500)
+            });
+            if unchanged {
+                continue;
+            }
+            last_published = Some((power, now));
+
+            let reading = BatteryReading {
+                device: name.clone(),
+                transport: Transport::Usb,
+                percent: Some(power.percent),
+                state: power.state,
+                precision: Precision::Exact,
+                freshness: Freshness::Live,
+                note: None,
+            };
+            state
+                .lock()
+                .unwrap()
+                .upsert("8bitdo", reading, false, STALE_AFTER);
         }
 
         std::thread::sleep(Duration::from_millis(600));
@@ -313,4 +395,31 @@ pub fn snapshot(state: &Arc<Mutex<Shared>>) -> Vec<(String, DeviceState)> {
         })
         .map(|(key, value)| (key.clone(), value.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+
+    /// Manual end-to-end check against a real controller:
+    /// `cargo test -p controller-battery-widget -- --ignored --nocapture dump_live_devices`
+    #[test]
+    #[ignore = "needs a real controller attached"]
+    fn dump_live_devices() {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        spawn(shared.clone());
+        std::thread::sleep(Duration::from_secs(3));
+        let snapshot = snapshot(&shared);
+        for (key, state) in &snapshot {
+            println!(
+                "{key} -> name={:?} transport={:?} percent={:?} state={:?} stale={}",
+                state.reading.device,
+                state.reading.transport,
+                state.reading.percent,
+                state.reading.state,
+                state.is_stale()
+            );
+        }
+        assert!(!snapshot.is_empty(), "no device detected");
+    }
 }

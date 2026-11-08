@@ -7,7 +7,9 @@
 
 mod app;
 mod collector;
+mod icon_glyph;
 mod settings;
+mod tray;
 
 use eframe::egui;
 
