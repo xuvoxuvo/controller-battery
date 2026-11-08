@@ -1,6 +1,6 @@
 # 开发与发布
 
-面向修改本项目的人；普通用户请看 [README](../README.md)。
+面向修改本项目的人；普通用户请看 [README](../README.md)，使用中遇到问题看 [troubleshooting.md](troubleshooting.md)。
 
 AI 代理请先读根目录的 [AGENTS.md](../AGENTS.md)（架构、命令、约定与已知坑）。
 
@@ -69,6 +69,7 @@ crates/controller-battery-core/     协议与设备访问（无 UI，可单测�
 crates/controller-battery-widget/   egui 界面、采集线程与托盘图标
 docs/protocol.md                    报文实测记录
 docs/architecture.md                架构说明
+docs/troubleshooting.md             用户侧疑难排查
 docs/legacy/powershell/             早期 PowerShell 版本（仅存档）
 ```
 

@@ -35,6 +35,18 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - 新增手柄协议时，先写解码函数 + 真实报文的单元测试，再接采集线程。
 - 不要在代码或文档里写死本机路径（如 `C:\App\...`）。
 
+## 文档分工
+
+- **README 只写用户视角**：是什么、支持哪些设备、怎么用、有什么限制、怎么构建、去哪儿看文档。实现细节、协议坑、排查步骤、目录结构不进 README。
+- 各类内容各归其位：
+  - 构建、真机调试、CI 与发布 → `docs/development.md`；
+  - 使用中出问题的排查（托盘图标、电量不刷新、卡片找不到）→ `docs/troubleshooting.md`；
+  - 协议报文与实测记录 → `docs/protocol.md`；
+  - 架构 → `docs/architecture.md`；
+  - 面向 AI/贡献者的约定与踩坑 → 本文件（AGENTS.md）。
+- 同一个事实只写在最合适的那一层，其它地方用链接指过去。README 里删掉的「项目结构」不要加回来：它和 `docs/development.md` 的目录重复。
+- README 图片先缩放再提交：卡片截图约 460 px 宽（`docs/images/widget.png`），图标网格类预览不超过 500 px 宽；图标预览按 `icon_glyph.rs` 的 32×32 几何重新生成，不要拿旧图缩放凑数。
+
 ## 已经踩过的坑（改代码前务必读）
 
 ### DualSense 有三种输入报文
@@ -87,6 +99,8 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - exe 图标在 Explorer 里可能遇到浅色或深色背景，所以用中性灰描边（`OUTLINE_NEUTRAL`）；托盘图标才按系统主题切换描边。
 
 ## 托盘图标
+
+用户侧的排查流程写在 `docs/troubleshooting.md`；下面这些是实现约束，改代码前先看。
 
 - `tray.rs` 自己起线程 + 隐藏窗口跑消息循环；**不要**把 eframe 的窗口拿去做 `Shell_NotifyIcon` 宿主（winit 的 wndproc 不能改）。
 - 显示/隐藏用 `ShowWindow`，**不要**用 `ViewportCommand::Visible`：egui 一旦认为窗口不可见，`ShowWindow` 之后可能不再重绘。已验证隐藏→显示后卡片内容仍在。

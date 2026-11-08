@@ -4,6 +4,15 @@
 
 ## [Unreleased]
 
+### Added
+
+- `docs/troubleshooting.md`：托盘图标不出现、电量不刷新、卡片找不到等常见问题的排查步骤（原先堆在 README 的「使用」一节里）。
+
+### Changed
+
+- README 回归用户视角：托盘图标的排查说明移出、删掉与 `docs/development.md` 重复的「项目结构」，文档入口集中到「文档」一节；维护规则写进 `AGENTS.md` 的「文档分工」。
+- 托盘图标预览图从 1200×804 缩到 428×184（按 `icon_glyph.rs` 的几何重新生成，不再是放大图）。
+
 ## [0.2.0] - 2026-11-08
 
 ### Added
