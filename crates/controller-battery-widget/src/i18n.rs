@@ -248,7 +248,7 @@ static SIMPLIFIED_CHINESE: Strings = Strings {
     tray_show: "显示卡片",
     tray_hide: "隐藏卡片",
     hidden_title: "已隐藏到托盘",
-    hidden_body: "左键单击托盘图标可恢复卡片",
+    hidden_body: "左键单击托盘图标可恢复卡片（图标可能在通知区「^」中），右键菜单可退出",
     tray_no_device: "未检测到手柄",
     tray_count_fmt: "（共 {} 个）",
 };
@@ -279,7 +279,7 @@ static TRADITIONAL_CHINESE: Strings = Strings {
     tray_show: "顯示卡片",
     tray_hide: "隱藏卡片",
     hidden_title: "已隱藏到系統匣",
-    hidden_body: "左鍵單擊系統匣圖示可恢復卡片",
+    hidden_body: "左鍵單擊系統匣圖示可恢復卡片（圖示可能在通知區「^」內），右鍵選單可結束",
     tray_no_device: "未偵測到手把",
     tray_count_fmt: "（共 {} 個）",
 };
@@ -310,7 +310,7 @@ static ENGLISH: Strings = Strings {
     tray_show: "Show card",
     tray_hide: "Hide card",
     hidden_title: "Hidden to tray",
-    hidden_body: "Left-click the tray icon to bring the card back",
+    hidden_body: "Left-click the tray icon to restore (it may be under \"^\"), right-click to quit",
     tray_no_device: "No controller detected",
     tray_count_fmt: " ({} total)",
 };

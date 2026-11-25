@@ -41,7 +41,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW, GetShellWindow,
+    DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW, GetShellWindow,
     GetWindowThreadProcessId, IsWindowVisible, PostMessageW, PostQuitMessage, RegisterClassW,
     RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow, TrackPopupMenuEx,
     TranslateMessage, HICON, ICONINFO, MENU_ITEM_FLAGS, MF_ENABLED, MF_GRAYED, MF_SEPARATOR,
@@ -245,14 +245,17 @@ fn auto_hide_tick() {
         return;
     };
     let visible = unsafe { IsWindowVisible(window).as_bool() };
+    let focused = unsafe { GetForegroundWindow() == window };
+    let active = any_active();
     let action = {
         let Ok(mut state) = AUTO_HIDE.lock() else {
             return;
         };
         state.get_or_insert_with(|| AutoHide::new(false)).tick(
             Instant::now(),
-            any_active(),
+            active,
             visible,
+            focused,
             available(),
         )
     };
@@ -265,9 +268,14 @@ fn apply_auto_action(action: Action) {
     };
     match action {
         Action::None => {}
-        Action::Hide => unsafe {
-            let _ = ShowWindow(window, SW_HIDE);
-        },
+        Action::Hide => {
+            unsafe {
+                let _ = ShowWindow(window, SW_HIDE);
+            }
+            // Without this the card just vanishes and the tray icon (often
+            // folded into the "^" overflow on Windows 11) is easy to miss.
+            hint_hidden();
+        }
         // Do not call `SetForegroundWindow` here: the card should come back on
         // its own without stealing focus from whatever the user is doing.
         Action::Show => unsafe {

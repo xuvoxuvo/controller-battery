@@ -81,9 +81,17 @@ impl AutoHide {
     /// One tick of the timer.
     ///
     /// `any_active` is true while at least one controller is reporting,
-    /// `visible` is the real window visibility and `ready` says whether the
-    /// tray icon exists (without it a hidden card cannot be recovered).
-    pub fn tick(&mut self, now: Instant, any_active: bool, visible: bool, ready: bool) -> Action {
+    /// `visible` is the real window visibility, `focused` says whether the user
+    /// is interacting with the card right now and `ready` says whether the tray
+    /// icon exists (without it a hidden card cannot be recovered).
+    pub fn tick(
+        &mut self,
+        now: Instant,
+        any_active: bool,
+        visible: bool,
+        focused: bool,
+        ready: bool,
+    ) -> Action {
         // A controller showing up re-arms hiding after a manual show.
         if any_active && !self.was_active {
             self.armed = true;
@@ -105,6 +113,13 @@ impl AutoHide {
         }
 
         if any_active {
+            self.idle_since = None;
+            return Action::None;
+        }
+
+        // Never pull the card away from someone who is using it. This also
+        // keeps the context menu reachable while the controller is idle.
+        if focused {
             self.idle_since = None;
             return Action::None;
         }
@@ -139,9 +154,15 @@ mod tests {
         let base = Instant::now();
         let mut auto = AutoHide::new(true);
 
-        assert_eq!(auto.tick(base, false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 4), false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 8), false, true, true), Action::Hide);
+        assert_eq!(auto.tick(base, false, true, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 4), false, true, false, true),
+            Action::None
+        );
+        assert_eq!(
+            auto.tick(at(base, 8), false, true, false, true),
+            Action::Hide
+        );
     }
 
     #[test]
@@ -150,7 +171,10 @@ mod tests {
         let mut auto = AutoHide::new(true);
 
         for second in 0..30 {
-            assert_eq!(auto.tick(at(base, second), true, true, true), Action::None);
+            assert_eq!(
+                auto.tick(at(base, second), true, true, false, true),
+                Action::None
+            );
         }
     }
 
@@ -159,11 +183,20 @@ mod tests {
         let base = Instant::now();
         let mut auto = AutoHide::new(true);
 
-        assert_eq!(auto.tick(base, false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 8), false, true, true), Action::Hide);
+        assert_eq!(auto.tick(base, false, true, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 8), false, true, false, true),
+            Action::Hide
+        );
         // Hidden now; activity brings it back exactly once.
-        assert_eq!(auto.tick(at(base, 9), true, false, true), Action::Show);
-        assert_eq!(auto.tick(at(base, 10), true, true, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 9), true, false, false, true),
+            Action::Show
+        );
+        assert_eq!(
+            auto.tick(at(base, 10), true, true, false, true),
+            Action::None
+        );
     }
 
     #[test]
@@ -171,19 +204,34 @@ mod tests {
         let base = Instant::now();
         let mut auto = AutoHide::new(true);
 
-        assert_eq!(auto.tick(base, false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 8), false, true, true), Action::Hide);
+        assert_eq!(auto.tick(base, false, true, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 8), false, true, false, true),
+            Action::Hide
+        );
 
         // The user clicks the tray icon while nothing is connected.
         auto.note_manual_show();
         for second in 9..40 {
-            assert_eq!(auto.tick(at(base, second), false, true, true), Action::None);
+            assert_eq!(
+                auto.tick(at(base, second), false, true, false, true),
+                Action::None
+            );
         }
 
         // A controller reports, then goes idle again: hiding re-arms.
-        assert_eq!(auto.tick(at(base, 40), true, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 41), false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 49), false, true, true), Action::Hide);
+        assert_eq!(
+            auto.tick(at(base, 40), true, true, false, true),
+            Action::None
+        );
+        assert_eq!(
+            auto.tick(at(base, 41), false, true, false, true),
+            Action::None
+        );
+        assert_eq!(
+            auto.tick(at(base, 49), false, true, false, true),
+            Action::Hide
+        );
     }
 
     #[test]
@@ -192,10 +240,19 @@ mod tests {
         let mut auto = AutoHide::new(true);
         auto.note_manual_hide();
 
-        assert_eq!(auto.tick(at(base, 0), false, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 0), false, false, false, true),
+            Action::None
+        );
         // The controller wakes while the user has the card hidden by hand.
-        assert_eq!(auto.tick(at(base, 1), true, false, true), Action::None);
-        assert_eq!(auto.tick(at(base, 2), true, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 1), true, false, false, true),
+            Action::None
+        );
+        assert_eq!(
+            auto.tick(at(base, 2), true, false, false, true),
+            Action::None
+        );
     }
 
     #[test]
@@ -205,7 +262,7 @@ mod tests {
 
         for second in 0..30 {
             assert_eq!(
-                auto.tick(at(base, second), false, true, false),
+                auto.tick(at(base, second), false, true, false, false),
                 Action::None
             );
         }
@@ -217,7 +274,10 @@ mod tests {
         let mut auto = AutoHide::new(false);
 
         for second in 0..30 {
-            assert_eq!(auto.tick(at(base, second), false, true, true), Action::None);
+            assert_eq!(
+                auto.tick(at(base, second), false, true, false, true),
+                Action::None
+            );
         }
         assert_eq!(auto.set_enabled(false), Action::None);
     }
@@ -227,10 +287,16 @@ mod tests {
         let base = Instant::now();
         let mut auto = AutoHide::new(true);
 
-        assert_eq!(auto.tick(base, false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 8), false, true, true), Action::Hide);
+        assert_eq!(auto.tick(base, false, true, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 8), false, true, false, true),
+            Action::Hide
+        );
         assert_eq!(auto.set_enabled(false), Action::Show);
-        assert_eq!(auto.tick(at(base, 9), false, true, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 9), false, true, false, true),
+            Action::None
+        );
     }
 
     #[test]
@@ -239,7 +305,34 @@ mod tests {
         let mut auto = AutoHide::new(false);
 
         assert_eq!(auto.set_enabled(true), Action::None);
-        assert_eq!(auto.tick(base, false, true, true), Action::None);
-        assert_eq!(auto.tick(at(base, 8), false, true, true), Action::Hide);
+        assert_eq!(auto.tick(base, false, true, false, true), Action::None);
+        assert_eq!(
+            auto.tick(at(base, 8), false, true, false, true),
+            Action::Hide
+        );
+    }
+
+    #[test]
+    fn focus_keeps_the_card_visible() {
+        let base = Instant::now();
+        let mut auto = AutoHide::new(true);
+
+        // The user is looking at the card while the controller sleeps.
+        for second in 0..30 {
+            assert_eq!(
+                auto.tick(at(base, second), false, true, true, true),
+                Action::None
+            );
+        }
+
+        // Focus moves elsewhere: the idle countdown starts now.
+        assert_eq!(
+            auto.tick(at(base, 30), false, true, false, true),
+            Action::None
+        );
+        assert_eq!(
+            auto.tick(at(base, 38), false, true, false, true),
+            Action::Hide
+        );
     }
 }
