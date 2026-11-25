@@ -41,9 +41,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, ChangeWindowMessageFilterEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow,
-    GetMessageW, GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW,
+    GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
+    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
     SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     TrackPopupMenuEx, TranslateMessage, GWL_EXSTYLE, HICON, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS,
     MF_ENABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
@@ -298,13 +298,12 @@ fn auto_hide_tick() {
     }
 
     let visible = unsafe { IsWindowVisible(window).as_bool() };
-    let focused = unsafe { GetForegroundWindow() == window };
     let active = any_active();
     let now = Instant::now();
     let (action, deadline) = {
         let mut guard = auto_hide_lock();
         let state = guard.get_or_insert_with(|| AutoHide::new(false));
-        let action = state.tick(now, active, visible, focused, available());
+        let action = state.tick(now, active, visible, available());
         (action, state.deadline())
     };
     *deadline_lock() = if action == Action::Hide {
