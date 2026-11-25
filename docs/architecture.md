@@ -22,9 +22,10 @@
 │  │     └─ xinput.rs      # Windows XInput 后端
 │  └─ controller-battery-widget/      # egui 界面 + 采集线程
 │     └─ src/
-│        ├─ app.rs         # 卡片绘制、右键菜单、语言切换
+│        ├─ app.rs         # 卡片绘制、语言切换
 │        ├─ i18n.rs        # 简体中文 / 繁體中文 / English 文案表
 │        ├─ autohide.rs    # 空闲自动隐藏的状态机（可单测）
+│        ├─ menu.rs        # 卡片右键菜单（原生 Win32）
 │        └─ tray.rs        # 托盘图标、显示/隐藏、自动隐藏定时器
 ├─ docs/
 │  ├─ protocol.md          # 协议实测记录
@@ -67,6 +68,7 @@
 * `egui`/`eframe` 立即模式 UI，单窗口、无边框、置顶、可拖动；
 * 位置与语言、自动隐藏开关保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
 * 界面文案统一走 `i18n.rs`：`Language::System` 跟随 Windows 界面语言，也可在右键菜单固定为简体中文 / 繁體中文 / English；
+* 右键菜单是原生 Win32 菜单（`menu.rs`）：egui 的弹出层被限制在卡片窗口里会被裁剪，原生菜单能超出卡片、在屏幕边缘自动翻转，并跟随系统主题；
 * 只依赖系统 DLL，不引入 WebView，因此在 LTSC / 精简系统上也能跑。
 
 ### 空闲自动隐藏

@@ -15,6 +15,7 @@ use controller_battery_core::model::{BatteryReading, ChargeState};
 
 use crate::collector::{self, DeviceState, ErrorKind, Shared};
 use crate::i18n::{self, Language, Resolved, Strings};
+use crate::menu;
 use crate::settings::Settings;
 use crate::tray;
 
@@ -38,6 +39,8 @@ pub struct App {
     window: Option<isize>,
     /// Hiding runs after the frame, not in the middle of it.
     hide_requested: bool,
+    /// The context menu is a native Win32 popup; open it after the frame.
+    menu_requested: bool,
 }
 
 impl App {
@@ -67,6 +70,7 @@ impl App {
             window_height: EMPTY_HEIGHT,
             window,
             hide_requested: false,
+            menu_requested: false,
         }
     }
 }
@@ -161,45 +165,32 @@ impl eframe::App for App {
                     self.persist_position(ctx);
                 }
 
-                response.context_menu(|ui| {
-                    ui.checkbox(&mut self.settings.auto_hide, strings.auto_hide);
-                    ui.menu_button(strings.language, |ui| {
-                        for language in Language::ALL {
-                            let selected = self.settings.language == language;
-                            if ui
-                                .selectable_label(selected, strings.language_name(language))
-                                .clicked()
-                            {
-                                self.settings.language = language;
-                                ui.close_menu();
-                            }
-                        }
-                    });
-                    ui.separator();
-
-                    // Hiding is only safe once the shell owns the icon; a
-                    // sandboxed process cannot register one, and a hidden card
-                    // would then be unreachable.
-                    let hint = if tray::running_low_integrity() {
-                        strings.low_integrity_hint
-                    } else {
-                        strings.tray_not_ready_hint
-                    };
-                    if ui
-                        .add_enabled(tray::available(), egui::Button::new(strings.hide_to_tray))
-                        .on_disabled_hover_text(hint)
-                        .clicked()
-                    {
-                        self.hide_requested = true;
-                        ui.close_menu();
-                    }
-                    if ui.button(strings.quit).clicked() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                    }
-                });
+                if response.secondary_clicked() {
+                    self.menu_requested = true;
+                }
 
                 paint_card(ui, rect, &devices, error, overflow, strings);
             });
+
+        // A native popup must open after the frame is painted, or the card
+        // would freeze half-drawn behind the menu's modal loop.
+        if std::mem::take(&mut self.menu_requested) {
+            if let Some(window) = self.window {
+                match menu::show(window, &self.settings, tray::available()) {
+                    Some(menu::Command::ToggleAutoHide) => {
+                        self.settings.auto_hide = !self.settings.auto_hide;
+                    }
+                    Some(menu::Command::SetLanguage(language)) => {
+                        self.settings.language = language;
+                    }
+                    Some(menu::Command::HideToTray) => self.hide_requested = true,
+                    Some(menu::Command::Quit) => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                    None => {}
+                }
+            }
+        }
 
         // Hide after the frame is painted, not in the middle of it: the card
         // keeps its last content and the tray icon brings it back.

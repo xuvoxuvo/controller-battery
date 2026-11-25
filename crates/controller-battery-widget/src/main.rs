@@ -10,6 +10,7 @@ mod autohide;
 mod collector;
 mod i18n;
 mod icon_glyph;
+mod menu;
 mod settings;
 mod tray;
 
