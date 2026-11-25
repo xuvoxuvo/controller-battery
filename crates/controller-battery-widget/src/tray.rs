@@ -105,6 +105,8 @@ static FADE_READY: AtomicBool = AtomicBool::new(false);
 static FADE_LOCK: Mutex<()> = Mutex::new(());
 /// A fade is in progress; ignore tray clicks until it finishes.
 static FADING: AtomicBool = AtomicBool::new(false);
+/// Set by the UI thread when the user touches the card; aborts a fade-out.
+static ABORT_FADE: AtomicBool = AtomicBool::new(false);
 /// A hide fade is running, so the card shows "hiding…".
 static HIDING: AtomicBool = AtomicBool::new(false);
 
@@ -229,8 +231,7 @@ pub fn hide(window: isize) -> bool {
         return false;
     }
     note_manual_hide();
-    hide_with_fade(HWND(window as *mut core::ffi::c_void));
-    true
+    hide_with_fade(HWND(window as *mut core::ffi::c_void))
 }
 
 /// Enable or disable auto-hide.
@@ -259,6 +260,19 @@ fn note_manual_hide() {
     state
         .get_or_insert_with(|| AutoHide::new(false))
         .note_manual_hide();
+    drop(state);
+    *deadline_lock() = None;
+}
+
+/// The user clicked or dragged the card. Cancel the countdown immediately and
+/// abort a fade-out that already started, instead of only checking focus at the
+/// next one-second tick.
+pub fn note_user_interaction() {
+    ABORT_FADE.store(true, Ordering::Relaxed);
+    let mut state = auto_hide_lock();
+    state
+        .get_or_insert_with(|| AutoHide::new(false))
+        .note_interaction(Instant::now());
     drop(state);
     *deadline_lock() = None;
 }
@@ -322,10 +336,11 @@ fn apply_auto_action(action: Action) {
     match action {
         Action::None => {}
         Action::Hide => {
-            hide_with_fade(window);
-            // Without this the card just vanishes and the tray icon (often
-            // folded into the "^" overflow on Windows 11) is easy to miss.
-            hint_hidden();
+            if hide_with_fade(window) {
+                // Without this the card just vanishes and the tray icon (often
+                // folded into the "^" overflow on Windows 11) is easy to miss.
+                hint_hidden();
+            }
         }
         // Do not call `SetForegroundWindow` here: the card should come back on
         // its own without stealing focus from whatever the user is doing.
@@ -377,22 +392,43 @@ fn fade(window: HWND, from: u8, to: u8, steps: u32) {
     set_alpha(window, to);
 }
 
-/// Fade the card out, then hide it. The alpha is restored so the next
-/// `show_with_fade` starts from transparent instead of flashing.
-fn hide_with_fade(window: HWND) {
+/// Fade the card out, then hide it. Returns false when the user touched the
+/// card mid-fade and the hide was cancelled (the alpha is restored to opaque).
+fn hide_with_fade(window: HWND) -> bool {
     let _guard = FADE_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     FADING.store(true, Ordering::Relaxed);
     HIDING.store(true, Ordering::Relaxed);
+    ABORT_FADE.store(false, Ordering::Relaxed);
     ensure_fade_ready(window);
-    fade(window, 255, 0, FADE_STEPS_OUT);
+
+    let mut aborted = false;
+    for step in 1..=FADE_STEPS_OUT {
+        if ABORT_FADE.load(Ordering::Relaxed) {
+            aborted = true;
+            break;
+        }
+        let alpha = 255 - (255 * step / FADE_STEPS_OUT);
+        set_alpha(window, alpha as u8);
+        std::thread::sleep(FADE_FRAME);
+    }
+
+    if aborted {
+        // Put the card back to full opacity and leave it visible.
+        set_alpha(window, 255);
+        HIDING.store(false, Ordering::Relaxed);
+        FADING.store(false, Ordering::Relaxed);
+        return false;
+    }
+
     unsafe {
         let _ = ShowWindow(window, SW_HIDE);
     }
     set_alpha(window, 255);
     HIDING.store(false, Ordering::Relaxed);
     FADING.store(false, Ordering::Relaxed);
+    true
 }
 
 /// Show the card and fade it in from transparent.
@@ -463,19 +499,33 @@ fn main_window(cc: &eframe::CreationContext<'_>) -> Option<isize> {
 }
 
 /// Remove the icon and stop the tray thread (called when the app exits).
-pub fn shutdown() {
+/// Remove the icon synchronously: the tray thread's own `NIM_DELETE` can race
+/// with process exit, which leaves a ghost icon in the notification area.
+fn remove_icon() {
     let window = TRAY_WINDOW.load(Ordering::Relaxed);
     if window == 0 {
         return;
     }
     let hwnd = HWND(window as *mut core::ffi::c_void);
     unsafe {
-        // Remove the icon synchronously: the tray thread's own NIM_DELETE can
-        // race with process exit, which leaves a ghost icon in the notification
-        // area until the mouse happens to pass over it.
         let data = notify_data(hwnd, "", HICON::default());
         let _ = Shell_NotifyIconW(NIM_DELETE, &data);
-        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+    }
+}
+
+pub fn shutdown() {
+    let window = TRAY_WINDOW.load(Ordering::Relaxed);
+    if window == 0 {
+        return;
+    }
+    remove_icon();
+    unsafe {
+        let _ = PostMessageW(
+            HWND(window as *mut core::ffi::c_void),
+            WM_CLOSE,
+            WPARAM(0),
+            LPARAM(0),
+        );
     }
     // Give the thread a moment to drain its message loop.
     std::thread::sleep(std::time::Duration::from_millis(80));
@@ -740,9 +790,10 @@ unsafe fn menu(hwnd: HWND) {
             }
         }
         MENU_QUIT => {
-            if let Some(window) = main_window_handle() {
-                let _ = PostMessageW(window, WM_CLOSE, WPARAM(0), LPARAM(0));
-            }
+            // A hidden eframe window may never confirm a WM_CLOSE (eframe only
+            // closes after a repaint), so quit directly after removing the icon.
+            remove_icon();
+            std::process::exit(0);
         }
         _ => {}
     }

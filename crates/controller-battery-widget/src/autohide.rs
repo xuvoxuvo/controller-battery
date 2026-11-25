@@ -73,6 +73,13 @@ impl AutoHide {
         self.idle_since = None;
     }
 
+    /// The user clicked or dragged the card. Restart the hold so a running
+    /// countdown is cancelled immediately, not only at the next timer tick.
+    pub fn note_interaction(&mut self, now: Instant) {
+        self.hold_until = Some(now + MANUAL_SHOW_HOLD);
+        self.idle_since = None;
+    }
+
     /// When the fade should start, if a countdown is running.
     pub fn deadline(&self) -> Option<Instant> {
         self.idle_since.map(|since| since + IDLE_BEFORE_HIDE)
@@ -244,6 +251,24 @@ mod tests {
             auto.tick(at(base, 8), false, true, false, true),
             Action::Hide
         );
+    }
+
+    #[test]
+    fn interaction_cancels_the_countdown() {
+        let base = Instant::now();
+        let mut auto = AutoHide::new(true);
+
+        assert_eq!(auto.tick(base, false, true, false, true), Action::None);
+        assert_eq!(auto.countdown(base), Some(3));
+
+        auto.note_interaction(at(base, 1));
+        assert_eq!(auto.countdown(at(base, 1)), None);
+        // The hold keeps it visible for a while.
+        assert_eq!(
+            auto.tick(at(base, 2), false, true, false, true),
+            Action::None
+        );
+        assert_eq!(auto.countdown(at(base, 2)), None);
     }
 
     #[test]

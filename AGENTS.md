@@ -94,7 +94,7 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - **卡片右键菜单用原生 Win32 菜单**（`src/menu.rs`），不要换回 `response.context_menu`：egui 的弹出层被限制在卡片那 230×68 的窗口里，菜单会被裁掉，语言子菜单更是放不下。原生菜单自己处理屏幕边缘翻转和浅色/深色主题；菜单项结果以 `menu::Command` 返回，在帧末统一应用（隐藏、退出、语言、自动隐藏）。顺序是「隐藏到托盘 / 空闲时自动隐藏 / 语言 / 退出」；`can_hide` 为假时前两项一起置灰——自动隐藏也要靠托盘图标才能恢复。
 - **所有用户可见文案走 `src/i18n.rs`**：卡片、右键菜单、托盘菜单/悬停提示、气泡共用 zh-CN / zh-TW / en 三张表，不要在界面或托盘里写死字面量。加一门语言 = 加一张表 + `Language::ALL` + 一个 `#[serde(rename)]`；`i18n` 的测试会检查空字段和枚举覆盖。`Language::System` 读 Windows UI 语言（繁体子语言走 zh-TW）。
 - 字体按语言选：zh-TW 先找 `msjh.ttc`，其余先找 `Deng.ttf`；始终保留一个 CJK 回退，因为设备名可能包含中文。切换语言后要重新 `install_fonts`，并让托盘在下一个 1 秒 tick 里刷新提示文本。
-- **空闲自动隐藏在 `src/autohide.rs`**（纯状态机，有单测），由托盘线程的 1 秒定时器驱动，**不要**放进 `App::update`：卡片隐藏后 egui 可能不再重绘，只有托盘定时器保证还在跑。状态机**不缓存 hidden**，`tick` 用 `IsWindowVisible` 的真实可见性判断隐藏/显示；延迟是 `IDLE_BEFORE_HIDE`（3 s，叠加 1 s 空闲判定，XInput 例外为 2 s）。倒计时由 `tray::countdown()` 从共享的 deadline 与界面自己的时钟算出（托盘线程被菜单等阻塞时也不会漏掉 3-2-1 倒计时）：有手柄时替换行内「空闲」，无手柄时显示「未检测到手柄（N 秒后隐藏）」。手动显示后有 `MANUAL_SHOW_HOLD`（5 s）缓冲，手动隐藏会禁止自动回显（`auto_show_allowed`）。淡出/淡入期间的托盘点击会被忽略（`FADING`），避免动画中途翻转目标状态。第一次隐藏（自动或手动）会弹一次 `NIF_INFO` 气泡（`HINT_SHOWN`），提示图标可能折叠在「^」里、左键恢复、右键退出——改动提示文案时保持这三点。
+- **空闲自动隐藏在 `src/autohide.rs`**（纯状态机，有单测），由托盘线程的 1 秒定时器驱动，**不要**放进 `App::update`：卡片隐藏后 egui 可能不再重绘，只有托盘定时器保证还在跑。状态机**不缓存 hidden**，`tick` 用 `IsWindowVisible` 的真实可见性判断隐藏/显示；延迟是 `IDLE_BEFORE_HIDE`（3 s，叠加 1 s 空闲判定，XInput 例外为 2 s）。倒计时由 `tray::countdown()` 从共享的 deadline 与界面自己的时钟算出（托盘线程被菜单等阻塞时也不会漏掉 3-2-1 倒计时）：有手柄时替换行内「空闲」，无手柄时显示「未检测到手柄，N 秒后隐藏」。用户点击/拖动卡片时 App 调 `tray::note_user_interaction()`：立即取消倒计时，并置 `ABORT_FADE` 让已经开始的淡出回退到不透明，而不是等下一次 1 秒 tick 才检查焦点。手动显示后有 `MANUAL_SHOW_HOLD`（5 s）缓冲，手动隐藏会禁止自动回显（`auto_show_allowed`）。`FADING` 期间忽略托盘点击，避免动画中途翻转目标状态。第一次隐藏（自动或手动）会弹一次 `NIF_INFO` 气泡（`HINT_SHOWN`），提示图标可能折叠在「^」里、左键恢复、右键退出——改动提示文案时保持这三点。
 - 显示/隐藏统一走 `tray.rs` 的 `show_with_fade` / `hide_with_fade`：把卡片改成 `WS_EX_LAYERED` 再用 `SetLayeredWindowAttributes` 做淡入淡出（淡出 40 步 × 50 ms = 2 s，淡入 6 步 = 300 ms），DWM 会整体合成，圆角/文字一起渐变；`FADE_LOCK` 防止手动隐藏与自动隐藏交错，`FADING` 让动画期间的托盘点击被忽略。不要再用裸 `ShowWindow`，也不要清掉 `WS_EX_LAYERED`；淡出结束后 alpha 会恢复成 255，保证下次显示不透明。
 
 ## 图标与版本信息
@@ -120,7 +120,7 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - 第一次隐藏会弹一次气泡「已隐藏到托盘」（`NIF_INFO`，每个进程只弹一次），提示去哪儿找。
 - Windows 11 默认把新托盘图标折叠进「^」，这是系统行为，程序无法强制它出现在任务栏上。
 - **管理员运行（高完整性）时**：Explorer 在 Medium，UIPI 会静默丢弃它发来的托盘回调，表现为图标在、点击和菜单（包括「退出」）全无反应。托盘窗口创建后必须 `ChangeWindowMessageFilterEx(hwnd, WM_TRAY, MSGFLT_ALLOW, None)`，并同样放行 `WM_SHOW_REQUEST` 和 `TaskbarCreated`。
-- 退出走 `App::on_exit` → `tray::shutdown()`：在退出线程里**同步** `NIM_DELETE`，再通知托盘线程收尾；只靠托盘线程删除会和进程退出赛跑，通知区容易留下幽灵图标（强杀进程时无解，那是 Explorer 的行为）。
+- 退出走 `App::on_exit` → `tray::shutdown()`：在退出线程里**同步** `NIM_DELETE`，再通知托盘线程收尾；只靠托盘线程删除会和进程退出赛跑，通知区容易留下幽灵图标（强杀进程时无解，那是 Explorer 的行为）。**托盘菜单的「退出」不能只发 `WM_CLOSE`**：隐藏的 eframe 窗口可能永远不确认 CloseRequested（它需要一次重绘才生效），所以走 `remove_icon()` + `std::process::exit(0)`，先删图标再退进程。
 - **单实例**：`single.rs` 用命名互斥量 `Local\ControllerBattery.SingleInstance` 判断是否已有实例；第二次启动通过 `FindWindowW("ControllerBatteryTrayWindow")` 找到托盘窗口、发 `WM_SHOW_REQUEST` 后退出。互斥量句柄要在 `main` 里活到进程结束，否则保护失效。
 
 ## 发布

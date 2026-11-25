@@ -176,6 +176,17 @@ impl eframe::App for App {
                 let rect = ui.max_rect();
                 let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
 
+                // Touching the card cancels the auto-hide countdown and aborts a
+                // fade that already started, instead of waiting for the next
+                // one-second timer tick.
+                if response.clicked()
+                    || response.secondary_clicked()
+                    || response.drag_started()
+                    || response.dragged()
+                {
+                    tray::note_user_interaction();
+                }
+
                 if response.drag_started() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
