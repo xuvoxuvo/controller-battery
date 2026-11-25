@@ -29,6 +29,9 @@ pub const STALE_AFTER: Duration = Duration::from_secs(1);
 /// XInput is polled every 800 ms and enumeration occasionally takes longer;
 /// keep a little more slack so a connected pad never blinks to "idle".
 const XINPUT_STALE_AFTER: Duration = Duration::from_secs(2);
+/// A HID device missing from one enumeration pass is not necessarily gone;
+/// wait this long before dropping its row so a hiccup does not make it blink.
+const HID_GONE_GRACE: Duration = Duration::from_secs(1);
 /// Bluetooth battery values are polled, so they may be older than that.
 const BLE_STALE_AFTER: Duration = Duration::from_secs(20);
 
@@ -106,16 +109,24 @@ pub fn spawn(state: Arc<Mutex<Shared>>) {
 }
 
 fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
+    let mut missing_since: Option<Instant> = None;
     std::thread::spawn(move || loop {
         let controller = enumerate_dualsense().into_iter().next();
         let Some(controller) = controller else {
-            // Enumeration is authoritative: drop the row at once so a
-            // disconnected controller immediately gives way to the
-            // "no controller detected" screen.
-            state.lock().unwrap().remove("dualsense");
+            // Enumeration is authoritative: drop the row shortly after the
+            // controller disappears so the card returns to the "no controller"
+            // screen. The one-second grace absorbs a single failed pass.
+            match missing_since {
+                Some(since) if since.elapsed() >= HID_GONE_GRACE => {
+                    state.lock().unwrap().remove("dualsense");
+                }
+                Some(_) => {}
+                None => missing_since = Some(Instant::now()),
+            }
             std::thread::sleep(Duration::from_millis(500));
             continue;
         };
+        missing_since = None;
 
         let Some(device) = HidDevice::open(&controller) else {
             state.lock().unwrap().error = Some(ErrorKind::DualSenseOpenFailed);
@@ -157,18 +168,26 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
 /// while powering on) it becomes this HID gamepad and the input report carries
 /// an exact percentage.
 fn spawn_eightbitdo(state: Arc<Mutex<Shared>>) {
+    let mut missing_since: Option<Instant> = None;
     std::thread::spawn(move || loop {
         let interface = controller_battery_core::hid::enumerate_all()
             .into_iter()
             .find(eightbitdo::is_supported);
 
         let Some(interface) = interface else {
-            // Same as the DualSense thread: no grace, the row goes as soon as
-            // the dongle is gone.
-            state.lock().unwrap().remove("8bitdo");
+            // Same as the DualSense thread: keep a short grace against a
+            // single failed enumeration, then drop the row.
+            match missing_since {
+                Some(since) if since.elapsed() >= HID_GONE_GRACE => {
+                    state.lock().unwrap().remove("8bitdo");
+                }
+                Some(_) => {}
+                None => missing_since = Some(Instant::now()),
+            }
             std::thread::sleep(Duration::from_millis(700));
             continue;
         };
+        missing_since = None;
 
         // Read-only: the pad (and Steam Input) may already own the device for
         // rumble writes, but HID input reports are delivered to every handle.
