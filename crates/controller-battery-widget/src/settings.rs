@@ -4,10 +4,17 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Language;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Settings {
     pub window_x: Option<f32>,
     pub window_y: Option<f32>,
+    /// UI language; `System` follows the Windows UI language.
+    pub language: Language,
+    /// Hide the card when no controller is reporting.
+    pub auto_hide: bool,
 }
 
 /// `%LOCALAPPDATA%\ControllerBattery` — settings and diagnostics live here.
@@ -42,6 +49,47 @@ impl Settings {
         }
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::write(path, text);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_settings_files_still_load() {
+        // Version 0.2 only stored the window position.
+        let settings: Settings =
+            serde_json::from_str(r#"{"window_x":12.0,"window_y":34.0}"#).unwrap();
+        assert_eq!(settings.window_x, Some(12.0));
+        assert_eq!(settings.window_y, Some(34.0));
+        assert_eq!(settings.language, Language::System);
+        assert!(!settings.auto_hide);
+    }
+
+    #[test]
+    fn language_and_auto_hide_round_trip() {
+        let settings = Settings {
+            window_x: None,
+            window_y: Some(5.0),
+            language: Language::TraditionalChinese,
+            auto_hide: true,
+        };
+        let text = serde_json::to_string(&settings).unwrap();
+        assert!(text.contains("zh-TW"));
+        let parsed: Settings = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.language, Language::TraditionalChinese);
+        assert!(parsed.auto_hide);
+    }
+
+    #[test]
+    fn every_language_has_a_stable_name() {
+        for language in Language::ALL {
+            let text = serde_json::to_string(&language).unwrap();
+            let parsed: Language = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed, language);
+            assert!(!text.is_empty());
         }
     }
 }

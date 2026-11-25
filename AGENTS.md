@@ -90,6 +90,9 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - 窗口高度随设备数变化：需要 `with_resizable(true)`，否则 `ViewportCommand::InnerSize` 会被忽略。
 - 圆角是超椭圆（`squircle_points`），不要换回普通圆弧。
 - 设备名按**像素宽度**省略（`fit_width`），不要按字符数截断。
+- **所有用户可见文案走 `src/i18n.rs`**：卡片、右键菜单、托盘菜单/悬停提示、气泡共用 zh-CN / zh-TW / en 三张表，不要在界面或托盘里写死字面量。加一门语言 = 加一张表 + `Language::ALL` + 一个 `#[serde(rename)]`；`i18n` 的测试会检查空字段和枚举覆盖。`Language::System` 读 Windows UI 语言（繁体子语言走 zh-TW）。
+- 字体按语言选：zh-TW 先找 `msjh.ttc`，其余先找 `Deng.ttf`；始终保留一个 CJK 回退，因为设备名可能包含中文。切换语言后要重新 `install_fonts`，并让托盘在下一个 1 秒 tick 里刷新提示文本。
+- **空闲自动隐藏在 `src/autohide.rs`**（纯状态机，有单测），由托盘线程的 1 秒定时器驱动，**不要**放进 `App::update`：卡片隐藏后 egui 可能不再重绘，只有托盘定时器保证还在跑。手动显示/隐藏必须调 `note_manual_show` / `note_manual_hide`，否则卡片会在用户眼皮底下自动收起；没有托盘图标（`TRAY_READY` 为假）时绝不自动隐藏。
 
 ## 图标与版本信息
 

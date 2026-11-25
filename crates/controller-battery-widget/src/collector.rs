@@ -47,7 +47,16 @@ impl DeviceState {
 pub struct Shared {
     /// Ordered by device key so rows do not jump around.
     pub devices: BTreeMap<String, DeviceState>,
-    pub error: Option<String>,
+    /// Last error, as a value the UI can translate.
+    pub error: Option<ErrorKind>,
+}
+
+/// Failures the UI has to explain. Keep the message out of the collector: the
+/// text belongs to the current language, not to the data source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ErrorKind {
+    /// `HidDevice::open` failed; usually another program owns the pad.
+    DualSenseOpenFailed,
 }
 
 impl Shared {
@@ -114,8 +123,7 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
         missing_since = None;
 
         let Some(device) = HidDevice::open(&controller) else {
-            state.lock().unwrap().error =
-                Some("DualSense 打开失败（可能被其他程序占用）".to_string());
+            state.lock().unwrap().error = Some(ErrorKind::DualSenseOpenFailed);
             std::thread::sleep(Duration::from_millis(1500));
             continue;
         };

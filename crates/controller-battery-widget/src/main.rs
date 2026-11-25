@@ -6,7 +6,9 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod autohide;
 mod collector;
+mod i18n;
 mod icon_glyph;
 mod settings;
 mod tray;

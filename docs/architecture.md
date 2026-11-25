@@ -21,6 +21,11 @@
 │  │     ├─ hid.rs         # Windows HID 枚举/读取（SetupAPI + hid.dll）
 │  │     └─ xinput.rs      # Windows XInput 后端
 │  └─ controller-battery-widget/      # egui 界面 + 采集线程
+│     └─ src/
+│        ├─ app.rs         # 卡片绘制、右键菜单、语言切换
+│        ├─ i18n.rs        # 简体中文 / 繁體中文 / English 文案表
+│        ├─ autohide.rs    # 空闲自动隐藏的状态机（可单测）
+│        └─ tray.rs        # 托盘图标、显示/隐藏、自动隐藏定时器
 ├─ docs/
 │  ├─ protocol.md          # 协议实测记录
 │  └─ architecture.md      # 本文
@@ -60,8 +65,18 @@
 ## 界面
 
 * `egui`/`eframe` 立即模式 UI，单窗口、无边框、置顶、可拖动；
-* 位置保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
+* 位置与语言、自动隐藏开关保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
+* 界面文案统一走 `i18n.rs`：`Language::System` 跟随 Windows 界面语言，也可在右键菜单固定为简体中文 / 繁體中文 / English；
 * 只依赖系统 DLL，不引入 WebView，因此在 LTSC / 精简系统上也能跑。
+
+### 空闲自动隐藏
+
+`autohide.rs` 是一个不碰 Win32 的状态机，由托盘线程的 1 秒定时器驱动（卡片隐藏后 egui 可能不再重绘，不能放在 UI 线程）：
+
+* 所有手柄超过 8 秒没有上报（或已断开）→ 自动 `SW_HIDE`；
+* 有手柄重新上报 → 自动 `SW_SHOWNORMAL`，不抢焦点；
+* 手动显示/隐藏会清掉自动隐藏的「待命」状态，直到手柄再次活跃，避免卡片在用户眼前自动收起；
+* 没有托盘图标（`TRAY_READY` 为假）时绝不隐藏，否则卡片会失联。
 
 ### 托盘图标
 

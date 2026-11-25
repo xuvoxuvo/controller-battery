@@ -13,7 +13,8 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 use controller_battery_core::model::{BatteryReading, ChargeState};
 
-use crate::collector::{self, DeviceState, Shared};
+use crate::collector::{self, DeviceState, ErrorKind, Shared};
+use crate::i18n::{self, Language, Resolved, Strings};
 use crate::settings::Settings;
 use crate::tray;
 
@@ -28,6 +29,9 @@ const CORNER_RADIUS: f32 = 16.0;
 pub struct App {
     shared: Arc<Mutex<Shared>>,
     settings: Settings,
+    /// Settings already applied to the UI/tray, so a change is noticed once.
+    applied_language: Language,
+    applied_auto_hide: bool,
     last_saved: Option<egui::Pos2>,
     window_height: f32,
     /// eframe's window handle, needed to hide the card from the context menu.
@@ -38,20 +42,27 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, settings: Settings) -> Self {
-        install_fonts(&cc.egui_ctx);
+        i18n::set(settings.language);
+        install_fonts(&cc.egui_ctx, i18n::resolved());
 
         let mut visuals = egui::Visuals::dark();
         visuals.panel_fill = Color32::TRANSPARENT;
         visuals.window_fill = Color32::TRANSPARENT;
         cc.egui_ctx.set_visuals(visuals);
 
+        let applied_language = settings.language;
+        let applied_auto_hide = settings.auto_hide;
+
         let shared = Arc::new(Mutex::new(Shared::default()));
         collector::spawn(shared.clone());
         let window = tray::spawn(cc, shared.clone());
+        tray::set_auto_hide(applied_auto_hide);
 
         Self {
             shared,
             settings,
+            applied_language,
+            applied_auto_hide,
             last_saved: None,
             window_height: EMPTY_HEIGHT,
             window,
@@ -60,17 +71,29 @@ impl App {
     }
 }
 
-fn install_fonts(ctx: &egui::Context) {
+fn install_fonts(ctx: &egui::Context, language: Resolved) {
     // Windows ships a few CJK fonts; load one at runtime instead of embedding
-    // ~10 MB into the binary.
-    const CANDIDATES: [&str; 4] = [
+    // ~10 MB into the binary. A fallback is loaded for every language because
+    // device names come from Windows and may be Chinese even in the English UI.
+    const SIMPLIFIED: [&str; 4] = [
         "C:/Windows/Fonts/Deng.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
         "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/Dengb.ttf",
-        "C:/Windows/Fonts/simsunb.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
+    ];
+    const TRADITIONAL: [&str; 4] = [
+        "C:/Windows/Fonts/msjh.ttc",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/Deng.ttf",
+        "C:/Windows/Fonts/simsun.ttc",
     ];
 
-    for path in CANDIDATES {
+    let candidates = match language {
+        Resolved::TraditionalChinese => TRADITIONAL,
+        _ => SIMPLIFIED,
+    };
+
+    for path in candidates {
         let Ok(bytes) = std::fs::read(path) else {
             continue;
         };
@@ -107,7 +130,8 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_millis(250));
 
         let devices = collector::snapshot(&self.shared);
-        let error = self.shared.lock().unwrap().error.clone();
+        let error = self.shared.lock().unwrap().error;
+        let strings = i18n::current();
 
         let visible = devices.len().clamp(1, MAX_ROWS);
         let overflow = devices.len().saturating_sub(MAX_ROWS);
@@ -138,28 +162,43 @@ impl eframe::App for App {
                 }
 
                 response.context_menu(|ui| {
+                    ui.checkbox(&mut self.settings.auto_hide, strings.auto_hide);
+                    ui.menu_button(strings.language, |ui| {
+                        for language in Language::ALL {
+                            let selected = self.settings.language == language;
+                            if ui
+                                .selectable_label(selected, strings.language_name(language))
+                                .clicked()
+                            {
+                                self.settings.language = language;
+                                ui.close_menu();
+                            }
+                        }
+                    });
+                    ui.separator();
+
                     // Hiding is only safe once the shell owns the icon; a
                     // sandboxed process cannot register one, and a hidden card
                     // would then be unreachable.
                     let hint = if tray::running_low_integrity() {
-                        "当前进程以低权限运行，Windows 不允许注册托盘图标；请从资源管理器双击启动"
+                        strings.low_integrity_hint
                     } else {
-                        "托盘图标尚未就绪，正在自动重试"
+                        strings.tray_not_ready_hint
                     };
                     if ui
-                        .add_enabled(tray::available(), egui::Button::new("隐藏到托盘"))
+                        .add_enabled(tray::available(), egui::Button::new(strings.hide_to_tray))
                         .on_disabled_hover_text(hint)
                         .clicked()
                     {
                         self.hide_requested = true;
                         ui.close_menu();
                     }
-                    if ui.button("退出").clicked() {
+                    if ui.button(strings.quit).clicked() {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                 });
 
-                paint_card(ui, rect, &devices, error.as_deref(), overflow);
+                paint_card(ui, rect, &devices, error, overflow, strings);
             });
 
         // Hide after the frame is painted, not in the middle of it: the card
@@ -170,6 +209,21 @@ impl eframe::App for App {
                     tray::hint_hidden();
                 }
             }
+        }
+
+        // Settings changed from the context menu during this frame: apply them
+        // once, persist, and let the next frame use the new strings.
+        if self.settings.language != self.applied_language {
+            self.applied_language = self.settings.language;
+            i18n::set(self.applied_language);
+            install_fonts(ctx, i18n::resolved());
+            self.settings.save();
+            ctx.request_repaint();
+        }
+        if self.settings.auto_hide != self.applied_auto_hide {
+            self.applied_auto_hide = self.settings.auto_hide;
+            tray::set_auto_hide(self.applied_auto_hide);
+            self.settings.save();
         }
 
         if let Some(pos) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) {
@@ -232,8 +286,9 @@ fn paint_card(
     ui: &egui::Ui,
     rect: Rect,
     devices: &[(String, DeviceState)],
-    error: Option<&str>,
+    error: Option<ErrorKind>,
     overflow: usize,
+    strings: &Strings,
 ) {
     let painter = ui.painter();
     // Inset by half a point so the outline stroke is not clipped by the window
@@ -248,8 +303,8 @@ fn paint_card(
 
     if devices.is_empty() {
         let (title, hint) = match error {
-            Some(message) => ("读取失败", message),
-            None => ("未检测到手柄", "蓝牙配对或插 USB 线"),
+            Some(kind) => (strings.read_failed, strings.error(kind)),
+            None => (strings.no_device, strings.no_device_hint),
         };
         painter.text(
             egui::pos2(rect.left() + 16.0, rect.top() + 14.0),
@@ -270,7 +325,7 @@ fn paint_card(
 
     for (index, (_key, state)) in devices.iter().take(MAX_ROWS).enumerate() {
         let top = rect.top() + PAD + index as f32 * ROW_HEIGHT;
-        paint_row(painter, rect, top, state);
+        paint_row(painter, rect, top, state, strings);
 
         if index + 1 < devices.len().min(MAX_ROWS) {
             let y = top + ROW_HEIGHT - 0.5;
@@ -288,14 +343,20 @@ fn paint_card(
         painter.text(
             egui::pos2(rect.left() + 16.0, rect.bottom() - 16.0),
             Align2::LEFT_CENTER,
-            format!("还有 {overflow} 个设备"),
+            strings.more_devices(overflow),
             FontId::proportional(9.5),
             Color32::from_rgb(110, 116, 128),
         );
     }
 }
 
-fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState) {
+fn paint_row(
+    painter: &egui::Painter,
+    card: Rect,
+    top: f32,
+    state: &DeviceState,
+    strings: &Strings,
+) {
     let reading: &BatteryReading = &state.reading;
     let stale = state.is_stale();
     let degraded = state.degraded;
@@ -335,16 +396,16 @@ fn paint_row(painter: &egui::Painter, card: Rect, top: f32, state: &DeviceState)
     );
 
     let core_label = if stale {
-        "空闲"
+        strings.idle
     } else if degraded {
-        "状态未知"
+        strings.unknown
     } else {
-        reading.state.label()
+        strings.charge_state(reading.state)
     };
     let state_label = if reading.transport == controller_battery_core::Transport::Unknown {
         core_label.to_string()
     } else {
-        format!("{} · {core_label}", reading.transport.label())
+        format!("{} · {core_label}", strings.transport(reading.transport))
     };
     let accent = accent_color(reading, degraded, stale);
     painter.text(

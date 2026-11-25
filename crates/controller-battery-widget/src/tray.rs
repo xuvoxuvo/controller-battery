@@ -16,6 +16,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 use controller_battery_core::model::ChargeState;
 use windows::core::{w, PCWSTR};
@@ -49,7 +50,9 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WNDCLASSW, WS_OVERLAPPED,
 };
 
+use crate::autohide::{Action, AutoHide};
 use crate::collector::{self, Shared};
+use crate::i18n;
 use crate::icon_glyph;
 
 /// Callback message the shell sends for mouse activity on the icon.
@@ -84,6 +87,9 @@ static TICKS: AtomicU32 = AtomicU32::new(0);
 static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 /// Retry `NIM_ADD` every N timer ticks (the timer fires once a second).
 const RETRY_EVERY_TICKS: u32 = 5;
+/// Auto-hide lives here, not in the UI thread: while the card is hidden egui
+/// may not paint at all, so only the tray timer is guaranteed to keep running.
+static AUTO_HIDE: Mutex<Option<AutoHide>> = Mutex::new(None);
 
 /// Start the tray thread. Returns eframe's window handle for hide/show.
 pub fn spawn(cc: &eframe::CreationContext<'_>, shared: Arc<Mutex<Shared>>) -> Option<isize> {
@@ -187,10 +193,87 @@ pub fn hide(window: isize) -> bool {
     if window == 0 || !available() {
         return false;
     }
+    note_manual_hide();
     unsafe {
         let _ = ShowWindow(HWND(window as *mut core::ffi::c_void), SW_HIDE);
     }
     true
+}
+
+/// Enable or disable auto-hide. Disabling brings back a card auto-hide hid.
+pub fn set_auto_hide(enabled: bool) {
+    let action = {
+        let mut state = AUTO_HIDE.lock().unwrap();
+        state
+            .get_or_insert_with(|| AutoHide::new(enabled))
+            .set_enabled(enabled)
+    };
+    apply_auto_action(action);
+}
+
+/// The card was shown by the user; keep it visible until a controller reports.
+fn note_manual_show() {
+    if let Ok(mut state) = AUTO_HIDE.lock() {
+        state
+            .get_or_insert_with(|| AutoHide::new(false))
+            .note_manual_show();
+    }
+}
+
+/// The card was hidden by the user; never pop it back automatically.
+fn note_manual_hide() {
+    if let Ok(mut state) = AUTO_HIDE.lock() {
+        state
+            .get_or_insert_with(|| AutoHide::new(false))
+            .note_manual_hide();
+    }
+}
+
+/// At least one controller is reporting right now.
+fn any_active() -> bool {
+    let Some(shared) = SHARED.get() else {
+        return false;
+    };
+    collector::snapshot(shared)
+        .iter()
+        .any(|(_, state)| !state.is_stale())
+}
+
+/// One auto-hide tick, driven by the tray timer.
+fn auto_hide_tick() {
+    let Some(window) = main_window_handle() else {
+        return;
+    };
+    let visible = unsafe { IsWindowVisible(window).as_bool() };
+    let action = {
+        let Ok(mut state) = AUTO_HIDE.lock() else {
+            return;
+        };
+        state.get_or_insert_with(|| AutoHide::new(false)).tick(
+            Instant::now(),
+            any_active(),
+            visible,
+            available(),
+        )
+    };
+    apply_auto_action(action);
+}
+
+fn apply_auto_action(action: Action) {
+    let Some(window) = main_window_handle() else {
+        return;
+    };
+    match action {
+        Action::None => {}
+        Action::Hide => unsafe {
+            let _ = ShowWindow(window, SW_HIDE);
+        },
+        // Do not call `SetForegroundWindow` here: the card should come back on
+        // its own without stealing focus from whatever the user is doing.
+        Action::Show => unsafe {
+            let _ = ShowWindow(window, SW_SHOWNORMAL);
+        },
+    }
 }
 
 /// One-shot balloon that tells the user where the card went.
@@ -211,8 +294,8 @@ pub fn hint_hidden() {
         dwInfoFlags: NIIF_INFO,
         ..Default::default()
     };
-    write_wide(&mut data.szInfoTitle, "已隐藏到托盘");
-    write_wide(&mut data.szInfo, "左键单击托盘图标可恢复卡片");
+    write_wide(&mut data.szInfoTitle, i18n::current().hidden_title);
+    write_wide(&mut data.szInfo, i18n::current().hidden_body);
 
     unsafe {
         let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
@@ -227,6 +310,7 @@ fn restore_if_hidden() {
     unsafe {
         if !IsWindowVisible(window).as_bool() {
             let _ = ShowWindow(window, SW_SHOWNORMAL);
+            note_manual_show();
         }
     }
 }
@@ -388,6 +472,7 @@ unsafe extern "system" fn window_proc(
                 add_icon(hwnd);
             }
             refresh(hwnd);
+            auto_hide_tick();
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -421,8 +506,10 @@ fn toggle() {
     };
     unsafe {
         if IsWindowVisible(window).as_bool() {
+            note_manual_hide();
             let _ = ShowWindow(window, SW_HIDE);
         } else {
+            note_manual_show();
             let _ = ShowWindow(window, SW_SHOWNORMAL);
             let _ = SetForegroundWindow(window);
         }
@@ -437,22 +524,27 @@ unsafe fn menu(hwnd: HWND) {
         .map(|window| IsWindowVisible(window).as_bool())
         .unwrap_or(false);
 
+    let strings = i18n::current();
+    let show_text = wide(strings.tray_show);
+    let hide_text = wide(strings.tray_hide);
+    let quit_text = wide(strings.quit);
+
     let show_flags = if visible { MF_GRAYED } else { MF_ENABLED };
     let hide_flags = if visible { MF_ENABLED } else { MF_GRAYED };
     let _ = AppendMenuW(
         menu,
         MENU_ITEM_FLAGS(MF_STRING.0 | show_flags.0),
         MENU_SHOW,
-        w!("显示卡片"),
+        PCWSTR(show_text.as_ptr()),
     );
     let _ = AppendMenuW(
         menu,
         MENU_ITEM_FLAGS(MF_STRING.0 | hide_flags.0),
         MENU_HIDE,
-        w!("隐藏卡片"),
+        PCWSTR(hide_text.as_ptr()),
     );
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-    let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, w!("退出"));
+    let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, PCWSTR(quit_text.as_ptr()));
 
     let mut point = POINT::default();
     let _ = GetCursorPos(&mut point);
@@ -472,12 +564,14 @@ unsafe fn menu(hwnd: HWND) {
     match command {
         MENU_SHOW => {
             if let Some(window) = main_window_handle() {
+                note_manual_show();
                 let _ = ShowWindow(window, SW_SHOWNORMAL);
                 let _ = SetForegroundWindow(window);
             }
         }
         MENU_HIDE => {
             if let Some(window) = main_window_handle() {
+                note_manual_hide();
                 let _ = ShowWindow(window, SW_HIDE);
             }
         }
@@ -490,28 +584,34 @@ unsafe fn menu(hwnd: HWND) {
     }
 }
 
+/// NUL-terminated UTF-16 copy of `text`, for the duration of a Win32 call.
+fn wide(text: &str) -> Vec<u16> {
+    text.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 /// `(tooltip, percent, charging)` for the first controller in the snapshot.
 fn describe() -> (String, Option<u8>, bool) {
+    let strings = i18n::current();
     let Some(shared) = SHARED.get() else {
-        return ("Controller Battery".to_owned(), None, false);
+        return (strings.app_name.to_owned(), None, false);
     };
     let snapshot = collector::snapshot(shared);
     let Some((_, first)) = snapshot.first() else {
-        return ("Controller Battery · 未检测到手柄".to_owned(), None, false);
+        return (
+            format!("{} · {}", strings.app_name, strings.tray_no_device),
+            None,
+            false,
+        );
     };
 
     let reading = &first.reading;
+    let state = strings.charge_state(reading.state);
     let mut text = match reading.percent {
-        Some(percent) => format!(
-            "{} {}% · {}",
-            reading.device,
-            percent,
-            reading.state.label()
-        ),
-        None => format!("{} · {}", reading.device, reading.state.label()),
+        Some(percent) => format!("{} {percent}% · {state}", reading.device),
+        None => format!("{} · {state}", reading.device),
     };
     if snapshot.len() > 1 {
-        text.push_str(&format!("（共 {} 个）", snapshot.len()));
+        text.push_str(&strings.tray_count(snapshot.len()));
     }
 
     (
