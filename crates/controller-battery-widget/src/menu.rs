@@ -92,6 +92,9 @@ pub fn show(window: isize, settings: &Settings, can_hide: bool) -> Option<Comman
             MENU_HIDE,
             PCWSTR(hide.as_ptr()),
         );
+
+        // Three groups: settings, card action, exit.
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let quit = wide(strings.quit);
         let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, PCWSTR(quit.as_ptr()));
 
