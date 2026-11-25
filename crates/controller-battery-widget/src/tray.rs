@@ -21,7 +21,7 @@ use std::time::Instant;
 use controller_battery_core::model::ChargeState;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
+    CloseHandle, COLORREF, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
     CreateBitmap, CreateDIBSection, DeleteObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
@@ -42,12 +42,14 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
     DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW, GetShellWindow,
-    GetWindowThreadProcessId, IsWindowVisible, PostMessageW, PostQuitMessage, RegisterClassW,
-    RegisterWindowMessageW, SetForegroundWindow, SetTimer, ShowWindow, TrackPopupMenuEx,
-    TranslateMessage, HICON, ICONINFO, MENU_ITEM_FLAGS, MF_ENABLED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, SW_HIDE, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
-    WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER,
-    WNDCLASSW, WS_OVERLAPPED,
+    GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, PostQuitMessage,
+    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetLayeredWindowAttributes,
+    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenuEx, TranslateMessage,
+    GWL_EXSTYLE, HICON, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS, MF_ENABLED, MF_GRAYED, MF_SEPARATOR,
+    MF_STRING, MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE,
+    WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
+    WS_EX_LAYERED, WS_OVERLAPPED,
 };
 
 use crate::autohide::{Action, AutoHide};
@@ -57,6 +59,8 @@ use crate::icon_glyph;
 
 /// Callback message the shell sends for mouse activity on the icon.
 const WM_TRAY: u32 = WM_APP + 1;
+/// Posted by a second instance to bring the card back.
+pub const WM_SHOW_REQUEST: u32 = WM_APP + 2;
 const TIMER_ID: usize = 0xC8;
 const ICON_ID: u32 = 1;
 
@@ -90,6 +94,37 @@ const RETRY_EVERY_TICKS: u32 = 5;
 /// Auto-hide lives here, not in the UI thread: while the card is hidden egui
 /// may not paint at all, so only the tray timer is guaranteed to keep running.
 static AUTO_HIDE: Mutex<Option<AutoHide>> = Mutex::new(None);
+/// Layered-window fade, initialised on the first hide/show.
+const FADE_STEPS_OUT: u32 = 40; // 40 × 50 ms = the 2 s fade-out
+const FADE_STEPS_IN: u32 = 6; // 300 ms fade-in, snappy when a pad wakes up
+const FADE_FRAME: std::time::Duration = std::time::Duration::from_millis(50);
+static FADE_INIT: AtomicBool = AtomicBool::new(false);
+static FADE_READY: AtomicBool = AtomicBool::new(false);
+/// Serialises fades: manual hide (UI thread) and auto-hide (tray thread) must
+/// not interleave their alpha steps.
+static FADE_LOCK: Mutex<()> = Mutex::new(());
+/// A fade is in progress; ignore tray clicks until it finishes.
+static FADING: AtomicBool = AtomicBool::new(false);
+/// A hide fade is running, so the card shows "hiding…".
+static HIDING: AtomicBool = AtomicBool::new(false);
+
+/// When the auto-hide fade is due. The UI reads this from its own clock, so a
+/// late timer tick can never skip the 3-2-1 countdown.
+static DEADLINE: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// A poisoned mutex must never disable show/hide entirely, so recover the
+/// state instead of panicking or bailing out.
+fn auto_hide_lock() -> std::sync::MutexGuard<'static, Option<AutoHide>> {
+    AUTO_HIDE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn deadline_lock() -> std::sync::MutexGuard<'static, Option<Instant>> {
+    DEADLINE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Start the tray thread. Returns eframe's window handle for hide/show.
 pub fn spawn(cc: &eframe::CreationContext<'_>, shared: Arc<Mutex<Shared>>) -> Option<isize> {
@@ -190,43 +225,42 @@ fn report_failure(details: &str) {
 /// would be unreachable (this is what sandboxed/low-integrity processes hit —
 /// `Shell_NotifyIconW` fails with `ERROR_ACCESS_DENIED`).
 pub fn hide(window: isize) -> bool {
-    if window == 0 || !available() {
+    if window == 0 || !available() || FADING.load(Ordering::Relaxed) {
         return false;
     }
     note_manual_hide();
-    unsafe {
-        let _ = ShowWindow(HWND(window as *mut core::ffi::c_void), SW_HIDE);
-    }
+    hide_with_fade(HWND(window as *mut core::ffi::c_void));
     true
 }
 
-/// Enable or disable auto-hide. Disabling brings back a card auto-hide hid.
+/// Enable or disable auto-hide.
 pub fn set_auto_hide(enabled: bool) {
-    let action = {
-        let mut state = AUTO_HIDE.lock().unwrap();
-        state
-            .get_or_insert_with(|| AutoHide::new(enabled))
-            .set_enabled(enabled)
-    };
-    apply_auto_action(action);
+    let mut state = auto_hide_lock();
+    state
+        .get_or_insert_with(|| AutoHide::new(enabled))
+        .set_enabled(enabled);
+    drop(state);
+    *deadline_lock() = None;
 }
 
-/// The card was shown by the user; keep it visible until a controller reports.
+/// The card was shown by the user; hold auto-hide for a few seconds.
 fn note_manual_show() {
-    if let Ok(mut state) = AUTO_HIDE.lock() {
-        state
-            .get_or_insert_with(|| AutoHide::new(false))
-            .note_manual_show();
-    }
+    let mut state = auto_hide_lock();
+    state
+        .get_or_insert_with(|| AutoHide::new(false))
+        .note_manual_show(Instant::now());
+    drop(state);
+    *deadline_lock() = None;
 }
 
 /// The card was hidden by the user; never pop it back automatically.
 fn note_manual_hide() {
-    if let Ok(mut state) = AUTO_HIDE.lock() {
-        state
-            .get_or_insert_with(|| AutoHide::new(false))
-            .note_manual_hide();
-    }
+    let mut state = auto_hide_lock();
+    state
+        .get_or_insert_with(|| AutoHide::new(false))
+        .note_manual_hide();
+    drop(state);
+    *deadline_lock() = None;
 }
 
 /// At least one controller is reporting right now.
@@ -244,22 +278,41 @@ fn auto_hide_tick() {
     let Some(window) = main_window_handle() else {
         return;
     };
+    // A manual fade is running (UI thread); do not fight it.
+    if FADING.load(Ordering::Relaxed) {
+        return;
+    }
+
     let visible = unsafe { IsWindowVisible(window).as_bool() };
     let focused = unsafe { GetForegroundWindow() == window };
     let active = any_active();
-    let action = {
-        let Ok(mut state) = AUTO_HIDE.lock() else {
-            return;
-        };
-        state.get_or_insert_with(|| AutoHide::new(false)).tick(
-            Instant::now(),
-            active,
-            visible,
-            focused,
-            available(),
-        )
+    let now = Instant::now();
+    let (action, deadline) = {
+        let mut guard = auto_hide_lock();
+        let state = guard.get_or_insert_with(|| AutoHide::new(false));
+        let action = state.tick(now, active, visible, focused, available());
+        (action, state.deadline())
+    };
+    *deadline_lock() = if action == Action::Hide {
+        None
+    } else {
+        deadline
     };
     apply_auto_action(action);
+}
+
+/// Countdown for the card: `Some(n)` seconds, `Some(0)` while fading.
+pub fn countdown() -> Option<u8> {
+    if HIDING.load(Ordering::Relaxed) {
+        return Some(0);
+    }
+    let deadline = (*deadline_lock())?;
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        Some(0)
+    } else {
+        Some(left.as_millis().div_ceil(1000).min(9) as u8)
+    }
 }
 
 fn apply_auto_action(action: Action) {
@@ -269,19 +322,95 @@ fn apply_auto_action(action: Action) {
     match action {
         Action::None => {}
         Action::Hide => {
-            unsafe {
-                let _ = ShowWindow(window, SW_HIDE);
-            }
+            hide_with_fade(window);
             // Without this the card just vanishes and the tray icon (often
             // folded into the "^" overflow on Windows 11) is easy to miss.
             hint_hidden();
         }
         // Do not call `SetForegroundWindow` here: the card should come back on
         // its own without stealing focus from whatever the user is doing.
-        Action::Show => unsafe {
-            let _ = ShowWindow(window, SW_SHOWNORMAL);
-        },
+        Action::Show => show_with_fade(window),
     }
+}
+
+/// Make the card a layered window so the whole composition (squircle, text,
+/// battery bar) can fade as one. Called once, lazily, from hide/show.
+fn ensure_fade_ready(window: HWND) {
+    if FADE_INIT.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    unsafe {
+        let current = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+        if current & WS_EX_LAYERED.0 == 0 {
+            SetWindowLongPtrW(window, GWL_EXSTYLE, (current | WS_EX_LAYERED.0) as isize);
+            let _ = SetWindowPos(
+                window,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+        let ready = SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA).is_ok();
+        FADE_READY.store(ready, Ordering::Relaxed);
+    }
+}
+
+fn set_alpha(window: HWND, alpha: u8) {
+    unsafe {
+        let _ = SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA);
+    }
+}
+
+fn fade(window: HWND, from: u8, to: u8, steps: u32) {
+    if !FADE_READY.load(Ordering::Relaxed) {
+        return;
+    }
+    let delta = to as i32 - from as i32;
+    for step in 1..=steps {
+        let alpha = from as i32 + delta * step as i32 / steps as i32;
+        set_alpha(window, alpha as u8);
+        std::thread::sleep(FADE_FRAME);
+    }
+    set_alpha(window, to);
+}
+
+/// Fade the card out, then hide it. The alpha is restored so the next
+/// `show_with_fade` starts from transparent instead of flashing.
+fn hide_with_fade(window: HWND) {
+    let _guard = FADE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    FADING.store(true, Ordering::Relaxed);
+    HIDING.store(true, Ordering::Relaxed);
+    ensure_fade_ready(window);
+    fade(window, 255, 0, FADE_STEPS_OUT);
+    unsafe {
+        let _ = ShowWindow(window, SW_HIDE);
+    }
+    set_alpha(window, 255);
+    HIDING.store(false, Ordering::Relaxed);
+    FADING.store(false, Ordering::Relaxed);
+}
+
+/// Show the card and fade it in from transparent.
+fn show_with_fade(window: HWND) {
+    let _guard = FADE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    FADING.store(true, Ordering::Relaxed);
+    HIDING.store(false, Ordering::Relaxed);
+    ensure_fade_ready(window);
+    if FADE_READY.load(Ordering::Relaxed) {
+        set_alpha(window, 0);
+    }
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOWNORMAL);
+    }
+    fade(window, 0, 255, FADE_STEPS_IN);
+    FADING.store(false, Ordering::Relaxed);
 }
 
 /// One-shot balloon that tells the user where the card went.
@@ -317,7 +446,7 @@ fn restore_if_hidden() {
     };
     unsafe {
         if !IsWindowVisible(window).as_bool() {
-            let _ = ShowWindow(window, SW_SHOWNORMAL);
+            show_with_fade(window);
             note_manual_show();
         }
     }
@@ -339,16 +468,16 @@ pub fn shutdown() {
     if window == 0 {
         return;
     }
+    let hwnd = HWND(window as *mut core::ffi::c_void);
     unsafe {
-        let _ = PostMessageW(
-            HWND(window as *mut core::ffi::c_void),
-            WM_CLOSE,
-            WPARAM(0),
-            LPARAM(0),
-        );
+        // Remove the icon synchronously: the tray thread's own NIM_DELETE can
+        // race with process exit, which leaves a ghost icon in the notification
+        // area until the mouse happens to pass over it.
+        let data = notify_data(hwnd, "", HICON::default());
+        let _ = Shell_NotifyIconW(NIM_DELETE, &data);
+        let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
     }
-    // Give the thread a moment to send `NIM_DELETE`, otherwise the shell keeps
-    // a ghost icon until the mouse happens to pass over it.
+    // Give the thread a moment to drain its message loop.
     std::thread::sleep(std::time::Duration::from_millis(80));
 }
 
@@ -471,6 +600,15 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_SHOW_REQUEST => {
+            // A second launch asked the running instance to come back.
+            if let Some(window) = main_window_handle() {
+                note_manual_show();
+                show_with_fade(window);
+                let _ = SetForegroundWindow(window);
+            }
+            LRESULT(0)
+        }
         WM_TIMER => {
             let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
             // Registration can fail transiently (shell not ready yet), and a
@@ -509,22 +647,30 @@ fn main_window_handle() -> Option<HWND> {
 }
 
 fn toggle() {
+    // A fade owns the window right now; clicking mid-animation used to flip
+    // the intended state and leave the card invisible.
+    if FADING.load(Ordering::Relaxed) {
+        return;
+    }
     let Some(window) = main_window_handle() else {
         return;
     };
     unsafe {
         if IsWindowVisible(window).as_bool() {
             note_manual_hide();
-            let _ = ShowWindow(window, SW_HIDE);
+            hide_with_fade(window);
         } else {
             note_manual_show();
-            let _ = ShowWindow(window, SW_SHOWNORMAL);
+            show_with_fade(window);
             let _ = SetForegroundWindow(window);
         }
     }
 }
 
 unsafe fn menu(hwnd: HWND) {
+    if FADING.load(Ordering::Relaxed) {
+        return;
+    }
     let Ok(menu) = CreatePopupMenu() else {
         return;
     };
@@ -573,14 +719,14 @@ unsafe fn menu(hwnd: HWND) {
         MENU_SHOW => {
             if let Some(window) = main_window_handle() {
                 note_manual_show();
-                let _ = ShowWindow(window, SW_SHOWNORMAL);
+                show_with_fade(window);
                 let _ = SetForegroundWindow(window);
             }
         }
         MENU_HIDE => {
             if let Some(window) = main_window_handle() {
                 note_manual_hide();
-                let _ = ShowWindow(window, SW_HIDE);
+                hide_with_fade(window);
             }
         }
         MENU_QUIT => {

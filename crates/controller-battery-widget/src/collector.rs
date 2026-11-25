@@ -22,8 +22,13 @@ use controller_battery_core::xinput;
 
 /// How long an entry stays visible after its last update.
 const ENTRY_TTL: Duration = Duration::from_secs(10);
-/// A reading older than this is shown as "idle".
-pub const STALE_AFTER: Duration = Duration::from_secs(5);
+/// A reading older than this is shown as "idle". The HID streams (DualSense,
+/// 8BitDo) report continuously while in use and stop when idle, so one second
+/// is "as soon as it stops" without flickering on a dropped frame.
+pub const STALE_AFTER: Duration = Duration::from_secs(1);
+/// XInput is polled every 800 ms and enumeration occasionally takes longer;
+/// keep a little more slack so a connected pad never blinks to "idle".
+const XINPUT_STALE_AFTER: Duration = Duration::from_secs(2);
 /// Bluetooth battery values are polled, so they may be older than that.
 const BLE_STALE_AFTER: Duration = Duration::from_secs(20);
 
@@ -101,26 +106,16 @@ pub fn spawn(state: Arc<Mutex<Shared>>) {
 }
 
 fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
-    // How long a controller may be missing from enumeration before its row is
-    // retired. Enumeration is authoritative, so this only smooths over the
-    // instant between a reconnect.
-    const GONE_GRACE: Duration = Duration::from_secs(3);
-    let mut missing_since: Option<Instant> = None;
-
     std::thread::spawn(move || loop {
         let controller = enumerate_dualsense().into_iter().next();
         let Some(controller) = controller else {
-            match missing_since {
-                Some(since) if since.elapsed() > GONE_GRACE => {
-                    state.lock().unwrap().remove("dualsense");
-                }
-                Some(_) => {}
-                None => missing_since = Some(Instant::now()),
-            }
+            // Enumeration is authoritative: drop the row at once so a
+            // disconnected controller immediately gives way to the
+            // "no controller detected" screen.
+            state.lock().unwrap().remove("dualsense");
             std::thread::sleep(Duration::from_millis(500));
             continue;
         };
-        missing_since = None;
 
         let Some(device) = HidDevice::open(&controller) else {
             state.lock().unwrap().error = Some(ErrorKind::DualSenseOpenFailed);
@@ -162,26 +157,18 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
 /// while powering on) it becomes this HID gamepad and the input report carries
 /// an exact percentage.
 fn spawn_eightbitdo(state: Arc<Mutex<Shared>>) {
-    const GONE_GRACE: Duration = Duration::from_secs(3);
-    let mut missing_since: Option<Instant> = None;
-
     std::thread::spawn(move || loop {
         let interface = controller_battery_core::hid::enumerate_all()
             .into_iter()
             .find(eightbitdo::is_supported);
 
         let Some(interface) = interface else {
-            match missing_since {
-                Some(since) if since.elapsed() > GONE_GRACE => {
-                    state.lock().unwrap().remove("8bitdo");
-                }
-                Some(_) => {}
-                None => missing_since = Some(Instant::now()),
-            }
+            // Same as the DualSense thread: no grace, the row goes as soon as
+            // the dongle is gone.
+            state.lock().unwrap().remove("8bitdo");
             std::thread::sleep(Duration::from_millis(700));
             continue;
         };
-        missing_since = None;
 
         // Read-only: the pad (and Steam Input) may already own the device for
         // rumble writes, but HID input reports are delivered to every handle.
@@ -287,7 +274,7 @@ fn spawn_xinput(state: Arc<Mutex<Shared>>) {
                             reading.device = clean_device_name(name);
                         }
                         let mut shared = state.lock().unwrap();
-                        shared.upsert(&key, reading, false, STALE_AFTER);
+                        shared.upsert(&key, reading, false, XINPUT_STALE_AFTER);
                     }
                     None => {
                         state.lock().unwrap().remove(&key);

@@ -12,11 +12,20 @@ mod i18n;
 mod icon_glyph;
 mod menu;
 mod settings;
+mod single;
 mod tray;
 
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    // Keep the guard alive for the whole run: dropping it releases the mutex.
+    let instance = single::acquire();
+    if instance.is_none() {
+        // Another instance is running and has been asked to show its card.
+        return Ok(());
+    }
+    let _instance = instance;
+
     let settings = settings::Settings::load();
 
     let mut viewport = egui::ViewportBuilder::default()

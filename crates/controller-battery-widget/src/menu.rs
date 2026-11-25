@@ -62,18 +62,31 @@ pub fn show(window: isize, settings: &Settings, can_hide: bool) -> Option<Comman
             );
         }
 
-        let auto_hide = wide(strings.auto_hide);
+        let hide = wide(strings.hide_to_tray);
         let _ = AppendMenuW(
             menu,
-            MF_STRING
-                | if settings.auto_hide {
-                    MF_CHECKED
-                } else {
-                    MENU_ITEM_FLAGS(0)
-                },
-            MENU_AUTO_HIDE,
-            PCWSTR(auto_hide.as_ptr()),
+            MF_STRING | if can_hide { MF_ENABLED } else { MF_GRAYED },
+            MENU_HIDE,
+            PCWSTR(hide.as_ptr()),
         );
+
+        // Auto-hide hides to the tray, so it needs the same entry point: when
+        // "Hide to tray" is disabled, auto-hide is disabled too.
+        let auto_hide = wide(strings.auto_hide);
+        let auto_flags = MF_STRING
+            | if settings.auto_hide {
+                MF_CHECKED
+            } else {
+                MENU_ITEM_FLAGS(0)
+            }
+            | if can_hide {
+                MENU_ITEM_FLAGS(0)
+            } else {
+                MF_GRAYED
+            };
+        let _ = AppendMenuW(menu, auto_flags, MENU_AUTO_HIDE, PCWSTR(auto_hide.as_ptr()));
+
+        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
 
         let language = wide(strings.language);
         let _ = AppendMenuW(
@@ -83,17 +96,7 @@ pub fn show(window: isize, settings: &Settings, can_hide: bool) -> Option<Comman
             PCWSTR(language.as_ptr()),
         );
 
-        let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-
-        let hide = wide(strings.hide_to_tray);
-        let _ = AppendMenuW(
-            menu,
-            MF_STRING | if can_hide { MF_ENABLED } else { MF_GRAYED },
-            MENU_HIDE,
-            PCWSTR(hide.as_ptr()),
-        );
-
-        // Three groups: settings, card action, exit.
+        // Three groups: window visibility, language, exit.
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let quit = wide(strings.quit);
         let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, PCWSTR(quit.as_ptr()));

@@ -155,6 +155,10 @@ pub struct Strings {
     // Card.
     pub no_device: &'static str,
     pub no_device_hint: &'static str,
+    /// "No controller detected (hiding in 3 s)".
+    pub no_device_countdown_fmt: &'static str,
+    /// "No controller detected (hiding…)".
+    pub no_device_hiding: &'static str,
     pub read_failed: &'static str,
     pub more_devices_fmt: &'static str,
     pub dualsense_open_failed: &'static str,
@@ -163,6 +167,8 @@ pub struct Strings {
     pub hide_to_tray: &'static str,
     pub quit: &'static str,
     pub auto_hide: &'static str,
+    pub hide_countdown_fmt: &'static str,
+    pub hiding_now: &'static str,
     pub language: &'static str,
     pub system_language: &'static str,
 
@@ -217,6 +223,15 @@ impl Strings {
         self.more_devices_fmt.replace("{}", &count.to_string())
     }
 
+    pub fn hide_countdown(&self, seconds: u8) -> String {
+        self.hide_countdown_fmt.replace("{}", &seconds.to_string())
+    }
+
+    pub fn no_device_countdown(&self, seconds: u8) -> String {
+        self.no_device_countdown_fmt
+            .replace("{}", &seconds.to_string())
+    }
+
     pub fn tray_count(&self, count: usize) -> String {
         self.tray_count_fmt.replace("{}", &count.to_string())
     }
@@ -237,12 +252,16 @@ static SIMPLIFIED_CHINESE: Strings = Strings {
     xinput: "XInput",
     no_device: "未检测到手柄",
     no_device_hint: "蓝牙配对或插 USB 线",
+    no_device_countdown_fmt: "未检测到手柄（{} 秒后隐藏）",
+    no_device_hiding: "未检测到手柄（正在隐藏）…",
     read_failed: "读取失败",
     more_devices_fmt: "还有 {} 个设备",
     dualsense_open_failed: "DualSense 打开失败（可能被其他程序占用）",
     hide_to_tray: "隐藏到托盘",
     quit: "退出",
     auto_hide: "空闲时自动隐藏",
+    hide_countdown_fmt: "{} 秒后隐藏",
+    hiding_now: "正在隐藏…",
     language: "语言",
     system_language: "跟随系统",
     tray_show: "显示卡片",
@@ -268,12 +287,16 @@ static TRADITIONAL_CHINESE: Strings = Strings {
     xinput: "XInput",
     no_device: "未偵測到手把",
     no_device_hint: "藍牙配對或插上 USB 線",
+    no_device_countdown_fmt: "未偵測到手把（{} 秒後隱藏）",
+    no_device_hiding: "未偵測到手把（正在隱藏）…",
     read_failed: "讀取失敗",
     more_devices_fmt: "還有 {} 個裝置",
     dualsense_open_failed: "DualSense 開啟失敗（可能被其他程式占用）",
     hide_to_tray: "隱藏到系統匣",
     quit: "結束",
     auto_hide: "閒置時自動隱藏",
+    hide_countdown_fmt: "{} 秒後隱藏",
+    hiding_now: "正在隱藏…",
     language: "語言",
     system_language: "跟隨系統",
     tray_show: "顯示卡片",
@@ -299,12 +322,16 @@ static ENGLISH: Strings = Strings {
     xinput: "XInput",
     no_device: "No controller detected",
     no_device_hint: "Pair over Bluetooth or plug in USB",
+    no_device_countdown_fmt: "No controller detected (hiding in {} s)",
+    no_device_hiding: "No controller detected (hiding…)",
     read_failed: "Read failed",
     more_devices_fmt: "{} more device(s)",
     dualsense_open_failed: "Could not open DualSense (it may be in use by another app)",
     hide_to_tray: "Hide to tray",
     quit: "Quit",
     auto_hide: "Auto-hide when idle",
+    hide_countdown_fmt: "Hiding in {} s",
+    hiding_now: "Hiding…",
     language: "Language",
     system_language: "System",
     tray_show: "Show card",
@@ -367,6 +394,10 @@ mod tests {
             assert!(table.more_devices(3).contains('3'), "{name}");
             assert!(!table.tray_count(3).contains("{}"), "{name}");
             assert!(table.tray_count(3).contains('3'), "{name}");
+            assert!(!table.hide_countdown(3).contains("{}"), "{name}");
+            assert!(table.hide_countdown(3).contains('3'), "{name}");
+            assert!(!table.no_device_countdown(3).contains("{}"), "{name}");
+            assert!(table.no_device_countdown(3).contains('3'), "{name}");
         }
     }
 
@@ -411,12 +442,16 @@ mod tests {
                 ("xinput", self.xinput),
                 ("no_device", self.no_device),
                 ("no_device_hint", self.no_device_hint),
+                ("no_device_countdown_fmt", self.no_device_countdown_fmt),
+                ("no_device_hiding", self.no_device_hiding),
                 ("read_failed", self.read_failed),
                 ("more_devices_fmt", self.more_devices_fmt),
                 ("dualsense_open_failed", self.dualsense_open_failed),
                 ("hide_to_tray", self.hide_to_tray),
                 ("quit", self.quit),
                 ("auto_hide", self.auto_hide),
+                ("hide_countdown_fmt", self.hide_countdown_fmt),
+                ("hiding_now", self.hiding_now),
                 ("language", self.language),
                 ("system_language", self.system_language),
                 ("tray_show", self.tray_show),

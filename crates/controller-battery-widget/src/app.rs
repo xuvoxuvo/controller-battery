@@ -135,6 +135,7 @@ impl eframe::App for App {
 
         let devices = collector::snapshot(&self.shared);
         let error = self.shared.lock().unwrap().error;
+        let countdown = tray::countdown();
         let strings = i18n::current();
 
         let visible = devices.len().clamp(1, MAX_ROWS);
@@ -169,7 +170,7 @@ impl eframe::App for App {
                     self.menu_requested = true;
                 }
 
-                paint_card(ui, rect, &devices, error, overflow, strings);
+                paint_card(ui, rect, &devices, error, overflow, countdown, strings);
             });
 
         // A native popup must open after the frame is painted, or the card
@@ -279,6 +280,7 @@ fn paint_card(
     devices: &[(String, DeviceState)],
     error: Option<ErrorKind>,
     overflow: usize,
+    countdown: Option<u8>,
     strings: &Strings,
 ) {
     let painter = ui.painter();
@@ -293,9 +295,27 @@ fn paint_card(
     ));
 
     if devices.is_empty() {
+        // With no controller the countdown takes the place of the headline, so
+        // the "No controller detected" screen itself announces the hide.
         let (title, hint) = match error {
-            Some(kind) => (strings.read_failed, strings.error(kind)),
-            None => (strings.no_device, strings.no_device_hint),
+            Some(kind) => (
+                strings.read_failed.to_string(),
+                strings.error(kind).to_string(),
+            ),
+            None => match countdown {
+                Some(0) => (
+                    strings.no_device_hiding.to_string(),
+                    strings.no_device_hint.to_string(),
+                ),
+                Some(seconds) => (
+                    strings.no_device_countdown(seconds),
+                    strings.no_device_hint.to_string(),
+                ),
+                None => (
+                    strings.no_device.to_string(),
+                    strings.no_device_hint.to_string(),
+                ),
+            },
         };
         painter.text(
             egui::pos2(rect.left() + 16.0, rect.top() + 14.0),
@@ -316,7 +336,7 @@ fn paint_card(
 
     for (index, (_key, state)) in devices.iter().take(MAX_ROWS).enumerate() {
         let top = rect.top() + PAD + index as f32 * ROW_HEIGHT;
-        paint_row(painter, rect, top, state, strings);
+        paint_row(painter, rect, top, state, countdown, strings);
 
         if index + 1 < devices.len().min(MAX_ROWS) {
             let y = top + ROW_HEIGHT - 0.5;
@@ -341,11 +361,21 @@ fn paint_card(
     }
 }
 
+/// The countdown replaces the row's "idle" text, so no extra strip is needed.
+fn countdown_text(seconds: u8, strings: &Strings) -> String {
+    if seconds == 0 {
+        strings.hiding_now.to_string()
+    } else {
+        strings.hide_countdown(seconds)
+    }
+}
+
 fn paint_row(
     painter: &egui::Painter,
     card: Rect,
     top: f32,
     state: &DeviceState,
+    countdown: Option<u8>,
     strings: &Strings,
 ) {
     let reading: &BatteryReading = &state.reading;
@@ -386,15 +416,20 @@ fn paint_row(
         },
     );
 
+    // While the card is idle, the countdown takes the place of the "idle"
+    // label instead of adding another row of chrome.
     let core_label = if stale {
-        strings.idle
+        match countdown {
+            Some(seconds) => countdown_text(seconds, strings),
+            None => strings.idle.to_string(),
+        }
     } else if degraded {
-        strings.unknown
+        strings.unknown.to_string()
     } else {
-        strings.charge_state(reading.state)
+        strings.charge_state(reading.state).to_string()
     };
     let state_label = if reading.transport == controller_battery_core::Transport::Unknown {
-        core_label.to_string()
+        core_label
     } else {
         format!("{} · {core_label}", strings.transport(reading.transport))
     };
