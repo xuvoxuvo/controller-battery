@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-26
+
 ### Added
 
 - `docs/troubleshooting.md`：托盘图标不出现、电量不刷新、卡片找不到等常见问题的排查步骤（原先堆在 README 的「使用」一节里）。
