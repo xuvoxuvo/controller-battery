@@ -138,8 +138,25 @@ impl eframe::App for App {
         let countdown = tray::countdown();
         let strings = i18n::current();
 
-        let visible = devices.len().clamp(1, MAX_ROWS);
-        let overflow = devices.len().saturating_sub(MAX_ROWS);
+        // While the auto-hide countdown runs, the card shows the "no controller"
+        // screen instead of grey idle rows with a countdown, so a disconnected
+        // controller never sits around in a faded row.
+        let show_empty = countdown.is_some() && !devices.is_empty();
+        let row_devices: &[(String, DeviceState)] = if show_empty {
+            &devices[..0]
+        } else {
+            &devices[..]
+        };
+        let visible = if show_empty {
+            1
+        } else {
+            devices.len().clamp(1, MAX_ROWS)
+        };
+        let overflow = if show_empty {
+            0
+        } else {
+            devices.len().saturating_sub(MAX_ROWS)
+        };
         // The empty state uses the same height as a single row so that a
         // controller sleeping and waking does not resize the window.
         let height =
@@ -170,7 +187,7 @@ impl eframe::App for App {
                     self.menu_requested = true;
                 }
 
-                paint_card(ui, rect, &devices, error, overflow, countdown, strings);
+                paint_card(ui, rect, row_devices, error, overflow, countdown, strings);
             });
 
         // A native popup must open after the frame is painted, or the card
@@ -295,40 +312,43 @@ fn paint_card(
     ));
 
     if devices.is_empty() {
-        // With no controller the countdown takes the place of the headline, so
-        // the "No controller detected" screen itself announces the hide.
-        let (title, hint) = match error {
-            Some(kind) => (
+        // The countdown wins over a stale error: the card is about to hide and
+        // should say why, not show an old read failure.
+        let (title, hint) = if let Some(seconds) = countdown {
+            let title = if seconds == 0 {
+                strings.no_device_hiding.to_string()
+            } else {
+                strings.no_device_countdown(seconds)
+            };
+            (title, strings.no_device_hint.to_string())
+        } else if let Some(kind) = error {
+            (
                 strings.read_failed.to_string(),
                 strings.error(kind).to_string(),
-            ),
-            None => match countdown {
-                Some(0) => (
-                    strings.no_device_hiding.to_string(),
-                    strings.no_device_hint.to_string(),
-                ),
-                Some(seconds) => (
-                    strings.no_device_countdown(seconds),
-                    strings.no_device_hint.to_string(),
-                ),
-                None => (
-                    strings.no_device.to_string(),
-                    strings.no_device_hint.to_string(),
-                ),
-            },
+            )
+        } else {
+            (
+                strings.no_device.to_string(),
+                strings.no_device_hint.to_string(),
+            )
         };
-        painter.text(
+        let max_width = rect.width() - 32.0;
+        paint_fitted(
+            painter,
             egui::pos2(rect.left() + 16.0, rect.top() + 14.0),
             Align2::LEFT_TOP,
-            title,
-            FontId::proportional(14.0),
+            &title,
+            &[14.0, 13.0, 12.0, 11.0, 10.0],
+            max_width,
             Color32::from_rgb(150, 156, 165),
         );
-        painter.text(
+        paint_fitted(
+            painter,
             egui::pos2(rect.left() + 16.0, rect.top() + 46.0),
             Align2::LEFT_TOP,
-            hint,
-            FontId::proportional(11.0),
+            &hint,
+            &[11.0, 10.0, 9.5],
+            max_width,
             Color32::from_rgb(110, 116, 128),
         );
         return;
@@ -368,6 +388,35 @@ fn countdown_text(seconds: u8, strings: &Strings) -> String {
     } else {
         strings.hide_countdown(seconds)
     }
+}
+
+/// Draw `text`, shrinking the font until it fits `max_width` (and adding an
+/// ellipsis only if even the smallest size does not). English labels are much
+/// wider than the Chinese ones, and the card is only 230 px wide.
+fn paint_fitted(
+    painter: &egui::Painter,
+    pos: Pos2,
+    anchor: Align2,
+    text: &str,
+    sizes: &[f32],
+    max_width: f32,
+    color: Color32,
+) {
+    for &size in sizes {
+        let font = FontId::proportional(size);
+        let width = painter
+            .layout_no_wrap(text.to_owned(), font.clone(), color)
+            .size()
+            .x;
+        if width <= max_width {
+            painter.text(pos, anchor, text, font, color);
+            return;
+        }
+    }
+    let size = *sizes.last().unwrap_or(&10.0);
+    let font = FontId::proportional(size);
+    let fitted = fit_width(painter, text, &font, max_width);
+    painter.text(pos, anchor, fitted, font, color);
 }
 
 fn paint_row(
@@ -433,6 +482,13 @@ fn paint_row(
     } else {
         format!("{} · {core_label}", strings.transport(reading.transport))
     };
+    // Right-aligned, but never wide enough to run into the percentage.
+    let state_label = fit_width(
+        painter,
+        &state_label,
+        &FontId::proportional(9.5),
+        card.width() - 70.0,
+    );
     let accent = accent_color(reading, degraded, stale);
     painter.text(
         egui::pos2(card.right() - 16.0, top + 30.0),

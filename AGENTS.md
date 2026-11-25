@@ -119,6 +119,7 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - 失败诊断写在 `%LOCALAPPDATA%\ControllerBattery\tray.log`（错误码、进程/shell 完整性、会话号）；沙箱内写这个文件会被拒，所以普通用户环境才有。
 - 第一次隐藏会弹一次气泡「已隐藏到托盘」（`NIF_INFO`，每个进程只弹一次），提示去哪儿找。
 - Windows 11 默认把新托盘图标折叠进「^」，这是系统行为，程序无法强制它出现在任务栏上。
+- **管理员运行（高完整性）时**：Explorer 在 Medium，UIPI 会静默丢弃它发来的托盘回调，表现为图标在、点击和菜单（包括「退出」）全无反应。托盘窗口创建后必须 `ChangeWindowMessageFilterEx(hwnd, WM_TRAY, MSGFLT_ALLOW, None)`，并同样放行 `WM_SHOW_REQUEST` 和 `TaskbarCreated`。
 - 退出走 `App::on_exit` → `tray::shutdown()`：在退出线程里**同步** `NIM_DELETE`，再通知托盘线程收尾；只靠托盘线程删除会和进程退出赛跑，通知区容易留下幽灵图标（强杀进程时无解，那是 Explorer 的行为）。
 - **单实例**：`single.rs` 用命名互斥量 `Local\ControllerBattery.SingleInstance` 判断是否已有实例；第二次启动通过 `FindWindowW("ControllerBatteryTrayWindow")` 找到托盘窗口、发 `WM_SHOW_REQUEST` 后退出。互斥量句柄要在 `main` 里活到进程结束，否则保护失效。
 

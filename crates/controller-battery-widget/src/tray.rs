@@ -40,16 +40,16 @@ use windows::Win32::UI::Shell::{
     NIM_MODIFY, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow, GetMessageW, GetShellWindow,
-    GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW, PostQuitMessage,
-    RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, SetLayeredWindowAttributes,
-    SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenuEx, TranslateMessage,
-    GWL_EXSTYLE, HICON, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS, MF_ENABLED, MF_GRAYED, MF_SEPARATOR,
-    MF_STRING, MSG, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE,
-    WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW,
-    WS_EX_LAYERED, WS_OVERLAPPED,
+    AppendMenuW, ChangeWindowMessageFilterEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    TrackPopupMenuEx, TranslateMessage, GWL_EXSTYLE, HICON, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS,
+    MF_ENABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNORMAL, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
+    WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_OVERLAPPED,
 };
 
 use crate::autohide::{Action, AutoHide};
@@ -568,6 +568,16 @@ unsafe fn run() -> TrayResult {
         RegisterWindowMessageW(w!("TaskbarCreated")),
         Ordering::Relaxed,
     );
+
+    // Explorer lives at medium integrity. When this process runs elevated, UIPI
+    // silently drops its tray callbacks and the `TaskbarCreated` broadcast, so
+    // the icon would appear but no menu item (including Quit) would react.
+    let _ = ChangeWindowMessageFilterEx(hwnd, WM_TRAY, MSGFLT_ALLOW, None);
+    let _ = ChangeWindowMessageFilterEx(hwnd, WM_SHOW_REQUEST, MSGFLT_ALLOW, None);
+    let taskbar_created = TASKBAR_CREATED.load(Ordering::Relaxed);
+    if taskbar_created != 0 {
+        let _ = ChangeWindowMessageFilterEx(hwnd, taskbar_created, MSGFLT_ALLOW, None);
+    }
 
     add_icon(hwnd);
 

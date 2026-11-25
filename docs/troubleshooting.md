@@ -6,9 +6,10 @@
 
 1. **Windows 11 会折叠新图标**：点任务栏的「^」找电池图标；或者右键任务栏 →「任务栏设置」→「其他系统托盘图标」→ 打开 Controller Battery，让它常驻。这是系统行为，程序无法强制图标出现在任务栏上。
 2. **「隐藏到托盘」是灰的**：说明托盘图标没注册成功，程序通常处在受限环境（低完整性进程）。请从资源管理器双击 exe 启动；程序每 5 秒自动重试，条件满足后菜单会自动可用。
-3. **exe 所在目录带 `Low` 完整性标签**：`icacls <目录>` 里能看到 `Mandatory Label\Low Mandatory Level` 时，从该目录启动的 exe 一律被降级运行。把 exe 复制到普通目录（如 `C:\App\ControllerBattery`）再运行即可。
-4. **卡片被隐藏、图标又不见了**：Explorer 重启等原因会丢图标，程序检测到后会自动把卡片放回来；仍找不回时，结束 `controller-battery.exe` 再启动。
-5. **反馈问题**：附上 `%LOCALAPPDATA%\ControllerBattery\tray.log`，里面记录了错误码、进程与 shell 的完整性级别、会话号。
+3. **以管理员身份运行时图标在、但点击/退出没反应**：旧版本会被 Windows 的 UIPI 拦掉 Explorer 发来的托盘回调；当前版本已对托盘消息放行。请确认用的是最新构建。
+4. **exe 所在目录带 `Low` 完整性标签**：`icacls <目录>` 里能看到 `Mandatory Label\Low Mandatory Level` 时，从该目录启动的 exe 一律被降级运行。把 exe 复制到普通目录（如 `C:\App\ControllerBattery`）再运行即可。
+5. **卡片被隐藏、图标又不见了**：Explorer 重启等原因会丢图标，程序检测到后会自动把卡片放回来；仍找不回时，结束 `controller-battery.exe` 再启动。
+6. **反馈问题**：附上 `%LOCALAPPDATA%\ControllerBattery\tray.log`，里面记录了错误码、进程与 shell 的完整性级别、会话号。
 
 ## 电量不更新或显示 `--`
 
