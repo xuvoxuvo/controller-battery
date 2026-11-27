@@ -269,7 +269,7 @@ dependencies = [
 
 [[package]]
 name = "controller-battery-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "thiserror 1.0.69",
  "windows",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "controller-battery-widget"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "controller-battery-core",
  "eframe",
