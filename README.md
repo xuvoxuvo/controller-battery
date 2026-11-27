@@ -102,7 +102,7 @@
 
 ## 构建
 
-需要 Rust 1.75+：
+需要 Rust 1.87+：
 
 ```powershell
 cargo build --release

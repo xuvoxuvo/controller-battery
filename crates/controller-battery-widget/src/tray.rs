@@ -256,7 +256,9 @@ fn report_failure(details: &str) {
 /// The fade itself runs asynchronously on the tray window's 50 ms timer so the
 /// UI thread never freezes during the 2 s fade-out.
 pub fn hide(window: isize) -> bool {
-    if window == 0 || !available() || FADING.load(Ordering::Acquire) {
+    // Allow hiding to supersede an in-progress fade-in; only ignore if a hide
+    // fade is already running.
+    if window == 0 || !available() || HIDING.load(Ordering::Acquire) {
         return false;
     }
     let tray_window = TRAY_WINDOW.load(Ordering::Acquire);
@@ -417,6 +419,14 @@ fn start_fade_out(tray_hwnd: HWND, hint_after: bool) {
     let Some(window) = main_window_handle() else {
         return;
     };
+    if HIDING.load(Ordering::Acquire) {
+        return;
+    }
+    // If a fade-in is currently running, cancel it so an explicit hide request
+    // is never silently dropped during the 300 ms fade-in window.
+    if FADING.load(Ordering::Acquire) {
+        cancel_active_fade(tray_hwnd);
+    }
     if FADING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -473,6 +483,24 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
         unsafe {
             let _ = ShowWindow(window, SW_SHOWNORMAL);
             if focus_after {
+                let _ = SetForegroundWindow(window);
+            }
+        }
+        return;
+    }
+
+    // Already fading in: let the active animation finish without snapping alpha
+    // to 255 (which would flash back down on the next 50 ms step).
+    if FADING.load(Ordering::Acquire) {
+        if focus_after {
+            if let Some(fade) = ACTIVE_FADE
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .as_mut()
+            {
+                fade.focus_after = true;
+            }
+            unsafe {
                 let _ = SetForegroundWindow(window);
             }
         }

@@ -2,6 +2,7 @@
 name = "controller-battery-core"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Controller battery reporting core: DualSense, DualShock 4, Switch Pro, 8BitDo, XInput, and BLE backends"

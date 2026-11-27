@@ -43,11 +43,18 @@ const BLE_STALE_AFTER: Duration = Duration::from_secs(20);
 const HID_HEARTBEAT: Duration = Duration::from_millis(500);
 /// Shared HID enumeration cache lifetime.
 const HID_CACHE_TTL: Duration = Duration::from_millis(450);
+/// Retry window for transient `hid::serial_number` failures (`None` entries).
+const SERIAL_MISS_TTL: Duration = Duration::from_secs(5);
+
+struct SerialCacheEntry {
+    value: Option<String>,
+    cached_at: Instant,
+}
 
 static HID_CACHE: Mutex<Option<(Instant, Vec<HidInterface>)>> = Mutex::new(None);
 /// Path-keyed cache of HID serial numbers so `dedup_prefer_usb` does not open
 /// `CreateFileW` on every 500/700 ms enumeration tick.
-static SERIAL_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
+static SERIAL_CACHE: Mutex<Option<HashMap<String, SerialCacheEntry>>> = Mutex::new(None);
 
 /// Fallback device name when a hardware HID product string is unavailable.
 /// Kept as structured data so the UI and tray can localize it on language change.
@@ -135,14 +142,17 @@ fn cached_hid_interfaces() -> Vec<HidInterface> {
     fresh
 }
 
-/// Cached `hid::serial_number` lookup per device path (a plugged-in HID path's
-/// serial never changes, so we avoid opening a handle on every 500 ms tick).
+/// Cached `hid::serial_number` lookup per device path. Successful lookups stay
+/// cached while the path remains enumerated; `None` results expire after
+/// `SERIAL_MISS_TTL` so a transient `CreateFileW` failure can recover.
 fn cached_serial_number(path: &str) -> Option<String> {
     {
         let cache = lock_mutex(&SERIAL_CACHE);
         if let Some(map) = cache.as_ref() {
             if let Some(entry) = map.get(path) {
-                return entry.clone();
+                if entry.value.is_some() || entry.cached_at.elapsed() < SERIAL_MISS_TTL {
+                    return entry.value.clone();
+                }
             }
         }
     }
@@ -152,9 +162,13 @@ fn cached_serial_number(path: &str) -> Option<String> {
         .filter(|s| !s.is_empty());
 
     let mut cache = lock_mutex(&SERIAL_CACHE);
-    cache
-        .get_or_insert_with(HashMap::new)
-        .insert(path.to_string(), serial.clone());
+    cache.get_or_insert_with(HashMap::new).insert(
+        path.to_string(),
+        SerialCacheEntry {
+            value: serial.clone(),
+            cached_at: Instant::now(),
+        },
+    );
     serial
 }
 
@@ -199,6 +213,15 @@ impl Shared {
 
     fn remove(&mut self, key: &str) {
         self.devices.remove(key);
+    }
+
+    /// Demote a row to TTL-expiring when its reader thread exits or fails to
+    /// open, preventing a permanently wedged device from leaving a zombie row
+    /// forever while still absorbing brief reconnects without flickering.
+    fn mark_non_authoritative(&mut self, key: &str) {
+        if let Some(state) = self.devices.get_mut(key) {
+            state.authoritative = false;
+        }
     }
 
     /// Drop non-authoritative entries that have been silent for a while.
@@ -311,7 +334,10 @@ fn spawn_dualsense(state: Arc<Mutex<Shared>>) {
                 let owners = owners.clone();
                 let running = running.clone();
                 std::thread::spawn(move || {
-                    run_dualsense_reader(state, owners, key, interface);
+                    run_dualsense_reader(state.clone(), owners.clone(), key.clone(), interface);
+                    if lock_mutex(&owners).get(&key).map(String::as_str) == Some(path.as_str()) {
+                        lock_shared(&state).mark_non_authoritative(&key);
+                    }
                     lock_mutex(&running).remove(&path);
                 });
             }
@@ -420,7 +446,10 @@ fn spawn_dualshock4(state: Arc<Mutex<Shared>>) {
                 let owners = owners.clone();
                 let running = running.clone();
                 std::thread::spawn(move || {
-                    run_dualshock4_reader(state, owners, key, interface);
+                    run_dualshock4_reader(state.clone(), owners.clone(), key.clone(), interface);
+                    if lock_mutex(&owners).get(&key).map(String::as_str) == Some(path.as_str()) {
+                        lock_shared(&state).mark_non_authoritative(&key);
+                    }
                     lock_mutex(&running).remove(&path);
                 });
             }
@@ -530,7 +559,10 @@ fn spawn_switch_pro(state: Arc<Mutex<Shared>>) {
                 let owners = owners.clone();
                 let running = running.clone();
                 std::thread::spawn(move || {
-                    run_switch_pro_reader(state, owners, key, interface);
+                    run_switch_pro_reader(state.clone(), owners.clone(), key.clone(), interface);
+                    if lock_mutex(&owners).get(&key).map(String::as_str) == Some(path.as_str()) {
+                        lock_shared(&state).mark_non_authoritative(&key);
+                    }
                     lock_mutex(&running).remove(&path);
                 });
             }
@@ -655,6 +687,7 @@ fn spawn_eightbitdo(state: Arc<Mutex<Shared>>) {
         // Read-only: the pad (and Steam Input) may already own the device for
         // rumble writes, but HID input reports are delivered to every handle.
         let Some(device) = HidDevice::open_with_access(&interface, false) else {
+            lock_shared(&state).mark_non_authoritative("8bitdo");
             std::thread::sleep(Duration::from_millis(1000));
             continue;
         };
@@ -698,6 +731,7 @@ fn spawn_eightbitdo(state: Arc<Mutex<Shared>>) {
             lock_shared(&state).upsert("8bitdo", reading, false, STALE_AFTER, fallback_name);
         }
 
+        lock_shared(&state).mark_non_authoritative("8bitdo");
         std::thread::sleep(Duration::from_millis(600));
     });
 }

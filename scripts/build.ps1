@@ -5,7 +5,7 @@ param(
 
 # 构建 release 产物。
 #
-# 依赖：Rust 1.75+（cargo 在 PATH 中即可）。
+# 依赖：Rust 1.87+（cargo 在 PATH 中即可）。
 # 如果工具链装在非标准位置，可以设置环境变量 CARGO_EXE 指向 cargo 可执行文件。
 #
 # -Install 会把 exe 复制到一个普通目录（默认 %LOCALAPPDATA%\Programs\ControllerBattery）。

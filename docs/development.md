@@ -7,7 +7,7 @@ AI 代理请先读根目录的 [AGENTS.md](../AGENTS.md)（架构、命令、约
 ## 环境
 
 - Windows 10 1809+ / Windows 11
-- Rust 1.75+（[rustup](https://rustup.rs)）
+- Rust 1.87+（[rustup](https://rustup.rs)）
 - MSVC 或 GNU 工具链均可；GNU 工具链需要 MinGW-w64 提供 `dlltool`/`ld`
 
 当前只实现了 Windows 后端，Linux/macOS 需要补 `hidraw` / `IOHIDManager` 后端，见 `docs/architecture.md`。

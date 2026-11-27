@@ -2,6 +2,7 @@
 name = "controller-battery-widget"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Floating battery widget for game controllers"
