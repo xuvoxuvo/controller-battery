@@ -104,14 +104,26 @@ pub struct BatteryReading {
 }
 
 impl BatteryReading {
-    /// Human readable battery text, e.g. `25%`, `≈25%`, `中`.
+    /// Human readable battery percentage, e.g. `25%` or `--`.
     pub fn percent_text(&self) -> String {
         match self.percent {
-            Some(p) if self.precision == Precision::Buckets10 => format!("{p}%"),
             Some(p) => format!("{p}%"),
             None => "--".to_string(),
         }
     }
+}
+
+/// 64-bit FNV-1a fingerprint of a raw HID input report.
+///
+/// Used to detect whether a controller is actually producing new packets or
+/// Windows is repeating the last buffered report while the device is idle.
+pub fn report_fingerprint(report: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for &byte in report {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
 }
 
 /// Map the DualSense 0..=10 bucket to a mid-point percentage.

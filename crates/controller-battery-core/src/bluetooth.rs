@@ -46,10 +46,12 @@ fn is_connected(instance_id: &str) -> bool {
         Err(_) => return false,
     };
 
-    matches!(
+    let connected = matches!(
         device.ConnectionStatus(),
         Ok(BluetoothConnectionStatus::Connected)
-    )
+    );
+    let _ = device.Close();
+    connected
 }
 
 /// Diagnostic: connection status for an arbitrary address value.
@@ -60,10 +62,12 @@ pub fn probe_address(address: u64) -> bool {
     let Ok(device) = operation.get() else {
         return false;
     };
-    matches!(
+    let connected = matches!(
         device.ConnectionStatus(),
         Ok(BluetoothConnectionStatus::Connected)
-    )
+    );
+    let _ = device.Close();
+    connected
 }
 
 /// `BTHLE\DEV_E417D8BC7BA4\...` -> the 48 bit address.
@@ -91,8 +95,14 @@ pub struct BleProbe {
     pub connected: bool,
 }
 
-/// Like [`enumerate`], but without dropping disconnected devices.
-pub fn probe_all() -> Vec<BleProbe> {
+/// Raw PnP entry before checking live connection status.
+struct RawBleDevice {
+    instance_id: String,
+    name: String,
+    percent: u8,
+}
+
+fn scan_battery_devices() -> Vec<RawBleDevice> {
     let mut found = Vec::new();
 
     unsafe {
@@ -124,11 +134,9 @@ pub fn probe_all() -> Vec<BleProbe> {
                 continue;
             };
             let instance_id = instance_id(set, &info).unwrap_or_default();
-            found.push(BleProbe {
-                name,
-                address: address_from_instance_id(&instance_id),
-                connected: is_connected(&instance_id),
+            found.push(RawBleDevice {
                 instance_id,
+                name,
                 percent,
             });
         }
@@ -137,6 +145,20 @@ pub fn probe_all() -> Vec<BleProbe> {
     }
 
     found
+}
+
+/// Like [`enumerate`], but without dropping disconnected devices.
+pub fn probe_all() -> Vec<BleProbe> {
+    scan_battery_devices()
+        .into_iter()
+        .map(|raw| BleProbe {
+            address: address_from_instance_id(&raw.instance_id),
+            connected: is_connected(&raw.instance_id),
+            name: raw.name,
+            instance_id: raw.instance_id,
+            percent: raw.percent,
+        })
+        .collect()
 }
 
 /// A Bluetooth device that reports a battery percentage.
@@ -147,54 +169,29 @@ pub struct BleBattery {
     pub percent: u8,
 }
 
-/// Enumerate Bluetooth devices that publish a battery level.
+/// Enumerate connected Bluetooth devices that publish a battery level.
 pub fn enumerate() -> Vec<BleBattery> {
-    let mut found = Vec::new();
+    enumerate_filtered(|_| true)
+}
 
-    unsafe {
-        let set = match SetupDiGetClassDevsW(
-            Some(&GUID_DEVCLASS_BLUETOOTH),
-            PCWSTR::null(),
-            HWND::default(),
-            DIGCF_PRESENT,
-        ) {
-            Ok(handle) => handle,
-            Err(_) => return found,
-        };
-
-        let mut index = 0u32;
-        loop {
-            let mut info = SP_DEVINFO_DATA {
-                cbSize: std::mem::size_of::<SP_DEVINFO_DATA>() as u32,
-                ..Default::default()
-            };
-            if SetupDiEnumDeviceInfo(set, index, &mut info).is_err() {
-                break;
-            }
-            index += 1;
-
-            let Some(percent) = battery_of(set, &info) else {
-                continue;
-            };
-            let Some(name) = string_property(set, &info, &DEVPKEY_Device_FriendlyName) else {
-                continue;
-            };
-            let instance_id = instance_id(set, &info).unwrap_or_default();
-            if !is_connected(&instance_id) {
-                continue;
-            }
-
-            found.push(BleBattery {
-                instance_id,
-                name,
-                percent,
-            });
-        }
-
-        let _ = SetupDiDestroyDeviceInfoList(set);
-    }
-
-    found
+/// Enumerate connected Bluetooth devices whose friendly name matches
+/// `accept_name`. Filtering happens before querying WinRT `BluetoothLEDevice`
+/// so non-controller peripherals (headphones, mice, keyboards) incur no WinRT
+/// overhead.
+pub fn enumerate_filtered<F>(mut accept_name: F) -> Vec<BleBattery>
+where
+    F: FnMut(&str) -> bool,
+{
+    scan_battery_devices()
+        .into_iter()
+        .filter(|raw| accept_name(&raw.name))
+        .filter(|raw| is_connected(&raw.instance_id))
+        .map(|raw| BleBattery {
+            instance_id: raw.instance_id,
+            name: raw.name,
+            percent: raw.percent,
+        })
+        .collect()
 }
 
 fn battery_of(
@@ -254,7 +251,7 @@ fn instance_id(
 
 /// Heuristic: does the device name look like a game controller?
 pub fn looks_like_controller(name: &str) -> bool {
-    const KEYWORDS: [&str; 10] = [
+    const ASCII_KEYWORDS: [&str; 22] = [
         "controller",
         "gamepad",
         "8bitdo",
@@ -263,9 +260,60 @@ pub fn looks_like_controller(name: &str) -> bool {
         "xbox",
         "switch",
         "joy-con",
-        "手柄",
-        "手柄",
+        "pro controller",
+        "wireless controller",
+        "gamesir",
+        "flydigi",
+        "gulikit",
+        "beitong",
+        "hori",
+        "razer",
+        "nacon",
+        "scuf",
+        "stadia",
+        "luna",
+        "mobapad",
+        "bigbig won",
     ];
     let lower = name.to_ascii_lowercase();
-    KEYWORDS.iter().any(|k| lower.contains(k)) || name.contains("手柄")
+    ASCII_KEYWORDS.iter().any(|k| lower.contains(k))
+        || name.contains("手柄")
+        || name.contains("手把")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_common_controller_names() {
+        for name in [
+            "Xbox Wireless Controller",
+            "DualSense Wireless Controller",
+            "Wireless Controller",
+            "8BitDo Ultimate 2 Wireless",
+            "Pro Controller",
+            "Joy-Con (L)",
+            "GameSir G7 Pro",
+            "Flydigi Vader 4 Pro",
+            "GuliKit KK3 MAX",
+            "北通手柄",
+            "遊戲手把",
+        ] {
+            assert!(looks_like_controller(name), "expected match for {name}");
+        }
+    }
+
+    #[test]
+    fn ignores_non_controller_peripherals() {
+        for name in [
+            "WH-1000XM5",
+            "MX Master 3S",
+            "AirPods Pro",
+            "Keychron K2",
+            "Surface Pen",
+        ] {
+            assert!(!looks_like_controller(name), "unexpected match for {name}");
+        }
+    }
 }

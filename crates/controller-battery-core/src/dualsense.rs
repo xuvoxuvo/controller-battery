@@ -72,7 +72,7 @@ pub fn decode_input_report(report: &[u8]) -> Option<DecodedReport> {
         0x0 => (bucket_to_percent(bucket), ChargeState::Discharging),
         0x1 => (bucket_to_percent(bucket), ChargeState::Charging),
         0x2 => (100, ChargeState::Full),
-        0xA | 0xB => (0, ChargeState::BatteryError),
+        0xA | 0xB | 0xF => (0, ChargeState::BatteryError),
         _ => (bucket_to_percent(bucket), ChargeState::Unknown),
     };
 
@@ -182,6 +182,10 @@ mod tests {
         assert_eq!((d.percent, d.state), (100, ChargeState::Full));
 
         report[53] = 0xB2; // temperature error
+        let d = decode_input_report(&report).unwrap();
+        assert_eq!(d.state, ChargeState::BatteryError);
+
+        report[53] = 0xF2; // charge error
         let d = decode_input_report(&report).unwrap();
         assert_eq!(d.state, ChargeState::BatteryError);
     }

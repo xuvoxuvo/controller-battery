@@ -42,14 +42,14 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, ChangeWindowMessageFilterEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
     DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, PostMessageW,
-    PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
+    GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, KillTimer,
+    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
     SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
     TrackPopupMenuEx, TranslateMessage, GWL_EXSTYLE, HICON, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS,
     MF_ENABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNORMAL, TPM_RETURNCMD,
     TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-    WM_NULL, WM_RBUTTONUP, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_OVERLAPPED,
+    WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_OVERLAPPED,
 };
 
 use crate::autohide::{Action, AutoHide};
@@ -61,7 +61,10 @@ use crate::icon_glyph;
 const WM_TRAY: u32 = WM_APP + 1;
 /// Posted by a second instance to bring the card back.
 pub const WM_SHOW_REQUEST: u32 = WM_APP + 2;
+/// Posted by the UI thread to start a non-blocking hide fade on the tray thread.
+const WM_FADE_HIDE: u32 = WM_APP + 3;
 const TIMER_ID: usize = 0xC8;
+const FADE_TIMER_ID: usize = 0xC9;
 const ICON_ID: u32 = 1;
 
 const MENU_SHOW: usize = 1;
@@ -76,8 +79,17 @@ static MAIN_WINDOW: AtomicIsize = AtomicIsize::new(0);
 static TRAY_WINDOW: AtomicIsize = AtomicIsize::new(0);
 /// Current `HICON`, so the previous one can be destroyed.
 static ICON: AtomicIsize = AtomicIsize::new(0);
-/// Last rendered (tip, percent, charging) so idle refreshes do not churn icons.
-static LAST_STATE: Mutex<Option<(String, Option<u8>, bool)>> = Mutex::new(None);
+/// Last rendered tray state so idle refreshes do not churn icons, while a
+/// Windows light/dark theme switch triggers a redraw.
+#[derive(PartialEq, Eq)]
+struct TraySnapshot {
+    tip: String,
+    percent: Option<u8>,
+    charging: bool,
+    light_taskbar: bool,
+}
+
+static LAST_STATE: Mutex<Option<TraySnapshot>> = Mutex::new(None);
 /// True while the shell actually owns our icon. Hiding is only allowed then:
 /// a hidden card with no icon would be unreachable.
 static TRAY_READY: AtomicBool = AtomicBool::new(false);
@@ -94,21 +106,30 @@ const RETRY_EVERY_TICKS: u32 = 5;
 /// Auto-hide lives here, not in the UI thread: while the card is hidden egui
 /// may not paint at all, so only the tray timer is guaranteed to keep running.
 static AUTO_HIDE: Mutex<Option<AutoHide>> = Mutex::new(None);
-/// Layered-window fade, initialised on the first hide/show.
+/// Layered-window fade, initialised on the first hide/show and stepped via a
+/// 50 ms Win32 timer on the tray window so neither the UI thread nor the tray
+/// message loop ever blocks during a fade.
 const FADE_STEPS_OUT: u32 = 40; // 40 × 50 ms = the 2 s fade-out
 const FADE_STEPS_IN: u32 = 6; // 300 ms fade-in, snappy when a pad wakes up
-const FADE_FRAME: std::time::Duration = std::time::Duration::from_millis(50);
+const FADE_FRAME_MS: u32 = 50;
 static FADE_INIT: AtomicBool = AtomicBool::new(false);
 static FADE_READY: AtomicBool = AtomicBool::new(false);
-/// Serialises fades: manual hide (UI thread) and auto-hide (tray thread) must
-/// not interleave their alpha steps.
-static FADE_LOCK: Mutex<()> = Mutex::new(());
 /// A fade is in progress; ignore tray clicks until it finishes.
 static FADING: AtomicBool = AtomicBool::new(false);
 /// Set by the UI thread when the user touches the card; aborts a fade-out.
 static ABORT_FADE: AtomicBool = AtomicBool::new(false);
 /// A hide fade is running, so the card shows "hiding…".
 static HIDING: AtomicBool = AtomicBool::new(false);
+
+struct FadeState {
+    hiding: bool,
+    step: u32,
+    total: u32,
+    hint_after: bool,
+    focus_after: bool,
+}
+
+static ACTIVE_FADE: Mutex<Option<FadeState>> = Mutex::new(None);
 
 /// When the auto-hide fade is due. The UI reads this from its own clock, so a
 /// late timer tick can never skip the 3-2-1 countdown.
@@ -131,7 +152,7 @@ fn deadline_lock() -> std::sync::MutexGuard<'static, Option<Instant>> {
 /// Start the tray thread. Returns eframe's window handle for hide/show.
 pub fn spawn(cc: &eframe::CreationContext<'_>, shared: Arc<Mutex<Shared>>) -> Option<isize> {
     let window = main_window(cc)?;
-    MAIN_WINDOW.store(window, Ordering::Relaxed);
+    MAIN_WINDOW.store(window, Ordering::Release);
     let _ = SHARED.set(shared);
 
     std::thread::Builder::new()
@@ -148,7 +169,12 @@ pub fn spawn(cc: &eframe::CreationContext<'_>, shared: Arc<Mutex<Shared>>) -> Op
 
 /// Whether the shell actually owns our icon, i.e. whether hiding is safe.
 pub fn available() -> bool {
-    TRAY_READY.load(Ordering::Relaxed)
+    TRAY_READY.load(Ordering::Acquire)
+}
+
+/// Whether the card window is currently visible on screen.
+pub fn is_card_visible() -> bool {
+    main_window_handle().is_some_and(|w| unsafe { IsWindowVisible(w).as_bool() })
 }
 
 /// Integrity level of `process` (0x1000 low, 0x2000 medium, 0x3000 high).
@@ -226,12 +252,27 @@ fn report_failure(details: &str) {
 /// Refuses when the shell does not own our icon: a hidden card without an icon
 /// would be unreachable (this is what sandboxed/low-integrity processes hit —
 /// `Shell_NotifyIconW` fails with `ERROR_ACCESS_DENIED`).
+///
+/// The fade itself runs asynchronously on the tray window's 50 ms timer so the
+/// UI thread never freezes during the 2 s fade-out.
 pub fn hide(window: isize) -> bool {
-    if window == 0 || !available() || FADING.load(Ordering::Relaxed) {
+    if window == 0 || !available() || FADING.load(Ordering::Acquire) {
+        return false;
+    }
+    let tray_window = TRAY_WINDOW.load(Ordering::Acquire);
+    if tray_window == 0 {
         return false;
     }
     note_manual_hide();
-    hide_with_fade(HWND(window as *mut core::ffi::c_void))
+    unsafe {
+        PostMessageW(
+            HWND(tray_window as *mut core::ffi::c_void),
+            WM_FADE_HIDE,
+            WPARAM(1),
+            LPARAM(0),
+        )
+        .is_ok()
+    }
 }
 
 /// Enable or disable auto-hide.
@@ -268,7 +309,7 @@ fn note_manual_hide() {
 /// abort a fade-out that already started, instead of only checking focus at the
 /// next one-second tick.
 pub fn note_user_interaction() {
-    ABORT_FADE.store(true, Ordering::Relaxed);
+    ABORT_FADE.store(true, Ordering::Release);
     let mut state = auto_hide_lock();
     state
         .get_or_insert_with(|| AutoHide::new(false))
@@ -288,12 +329,12 @@ fn any_active() -> bool {
 }
 
 /// One auto-hide tick, driven by the tray timer.
-fn auto_hide_tick() {
+fn auto_hide_tick(tray_hwnd: HWND) {
     let Some(window) = main_window_handle() else {
         return;
     };
-    // A manual fade is running (UI thread); do not fight it.
-    if FADING.load(Ordering::Relaxed) {
+    // A fade is running; do not fight it.
+    if FADING.load(Ordering::Acquire) {
         return;
     }
 
@@ -311,12 +352,12 @@ fn auto_hide_tick() {
     } else {
         deadline
     };
-    apply_auto_action(action);
+    apply_auto_action(tray_hwnd, action);
 }
 
 /// Countdown for the card: `Some(n)` seconds, `Some(0)` while fading.
 pub fn countdown() -> Option<u8> {
-    if HIDING.load(Ordering::Relaxed) {
+    if HIDING.load(Ordering::Acquire) {
         return Some(0);
     }
     let deadline = (*deadline_lock())?;
@@ -328,29 +369,22 @@ pub fn countdown() -> Option<u8> {
     }
 }
 
-fn apply_auto_action(action: Action) {
-    let Some(window) = main_window_handle() else {
-        return;
-    };
+fn apply_auto_action(tray_hwnd: HWND, action: Action) {
     match action {
         Action::None => {}
-        Action::Hide => {
-            if hide_with_fade(window) {
-                // Without this the card just vanishes and the tray icon (often
-                // folded into the "^" overflow on Windows 11) is easy to miss.
-                hint_hidden();
-            }
-        }
+        // Without the one-shot balloon the card just vanishes and the tray icon
+        // (often folded into the "^" overflow on Windows 11) is easy to miss.
+        Action::Hide => start_fade_out(tray_hwnd, true),
         // Do not call `SetForegroundWindow` here: the card should come back on
         // its own without stealing focus from whatever the user is doing.
-        Action::Show => show_with_fade(window),
+        Action::Show => start_fade_in(tray_hwnd, false),
     }
 }
 
 /// Make the card a layered window so the whole composition (squircle, text,
 /// battery bar) can fade as one. Called once, lazily, from hide/show.
 fn ensure_fade_ready(window: HWND) {
-    if FADE_INIT.swap(true, Ordering::Relaxed) {
+    if FADE_INIT.swap(true, Ordering::AcqRel) {
         return;
     }
     unsafe {
@@ -368,7 +402,7 @@ fn ensure_fade_ready(window: HWND) {
             );
         }
         let ready = SetLayeredWindowAttributes(window, COLORREF(0), 255, LWA_ALPHA).is_ok();
-        FADE_READY.store(ready, Ordering::Relaxed);
+        FADE_READY.store(ready, Ordering::Release);
     }
 }
 
@@ -378,82 +412,172 @@ fn set_alpha(window: HWND, alpha: u8) {
     }
 }
 
-fn fade(window: HWND, from: u8, to: u8, steps: u32) {
-    if !FADE_READY.load(Ordering::Relaxed) {
+/// Begin a non-blocking fade-out stepped by `FADE_TIMER_ID` on the tray window.
+fn start_fade_out(tray_hwnd: HWND, hint_after: bool) {
+    let Some(window) = main_window_handle() else {
+        return;
+    };
+    if FADING.swap(true, Ordering::AcqRel) {
         return;
     }
-    let delta = to as i32 - from as i32;
-    for step in 1..=steps {
-        let alpha = from as i32 + delta * step as i32 / steps as i32;
-        set_alpha(window, alpha as u8);
-        std::thread::sleep(FADE_FRAME);
-    }
-    set_alpha(window, to);
-}
-
-/// Fade the card out, then hide it. Returns false when the user touched the
-/// card mid-fade and the hide was cancelled (the alpha is restored to opaque).
-fn hide_with_fade(window: HWND) -> bool {
-    let _guard = FADE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    FADING.store(true, Ordering::Relaxed);
-    HIDING.store(true, Ordering::Relaxed);
-    ABORT_FADE.store(false, Ordering::Relaxed);
+    HIDING.store(true, Ordering::Release);
+    ABORT_FADE.store(false, Ordering::Release);
     ensure_fade_ready(window);
 
-    let mut aborted = false;
-    for step in 1..=FADE_STEPS_OUT {
-        if ABORT_FADE.load(Ordering::Relaxed) {
-            aborted = true;
-            break;
+    if !FADE_READY.load(Ordering::Acquire) {
+        unsafe {
+            let _ = ShowWindow(window, SW_HIDE);
         }
-        let alpha = 255 - (255 * step / FADE_STEPS_OUT);
-        set_alpha(window, alpha as u8);
-        std::thread::sleep(FADE_FRAME);
+        HIDING.store(false, Ordering::Release);
+        FADING.store(false, Ordering::Release);
+        if hint_after {
+            hint_hidden();
+        }
+        return;
     }
 
-    if aborted {
-        // Put the card back to full opacity and leave it visible.
-        set_alpha(window, 255);
-        HIDING.store(false, Ordering::Relaxed);
-        FADING.store(false, Ordering::Relaxed);
-        return false;
-    }
-
+    *ACTIVE_FADE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(FadeState {
+        hiding: true,
+        step: 0,
+        total: FADE_STEPS_OUT,
+        hint_after,
+        focus_after: false,
+    });
     unsafe {
-        let _ = ShowWindow(window, SW_HIDE);
+        SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None);
     }
-    set_alpha(window, 255);
-    HIDING.store(false, Ordering::Relaxed);
-    FADING.store(false, Ordering::Relaxed);
-    true
 }
 
-/// Show the card and fade it in from transparent.
-fn show_with_fade(window: HWND) {
-    let _guard = FADE_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    FADING.store(true, Ordering::Relaxed);
-    HIDING.store(false, Ordering::Relaxed);
+/// Begin a non-blocking fade-in stepped by `FADE_TIMER_ID` on the tray window.
+fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
+    let Some(window) = main_window_handle() else {
+        return;
+    };
+    if FADING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    HIDING.store(false, Ordering::Release);
+    ABORT_FADE.store(false, Ordering::Release);
     ensure_fade_ready(window);
-    if FADE_READY.load(Ordering::Relaxed) {
+
+    if FADE_READY.load(Ordering::Acquire) {
         set_alpha(window, 0);
     }
     unsafe {
         let _ = ShowWindow(window, SW_SHOWNORMAL);
     }
-    fade(window, 0, 255, FADE_STEPS_IN);
-    FADING.store(false, Ordering::Relaxed);
+
+    if !FADE_READY.load(Ordering::Acquire) {
+        if focus_after {
+            unsafe {
+                let _ = SetForegroundWindow(window);
+            }
+        }
+        FADING.store(false, Ordering::Release);
+        return;
+    }
+
+    *ACTIVE_FADE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(FadeState {
+        hiding: false,
+        step: 0,
+        total: FADE_STEPS_IN,
+        hint_after: false,
+        focus_after,
+    });
+    unsafe {
+        SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None);
+    }
+}
+
+/// Advance the active fade animation by one 50 ms frame.
+fn step_fade(tray_hwnd: HWND) {
+    let Some(window) = main_window_handle() else {
+        unsafe {
+            let _ = KillTimer(tray_hwnd, FADE_TIMER_ID);
+        }
+        *ACTIVE_FADE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        HIDING.store(false, Ordering::Release);
+        FADING.store(false, Ordering::Release);
+        return;
+    };
+
+    let mut guard = ACTIVE_FADE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(fade) = guard.as_mut() else {
+        unsafe {
+            let _ = KillTimer(tray_hwnd, FADE_TIMER_ID);
+        }
+        return;
+    };
+
+    if fade.hiding && ABORT_FADE.load(Ordering::Acquire) {
+        *guard = None;
+        drop(guard);
+        unsafe {
+            let _ = KillTimer(tray_hwnd, FADE_TIMER_ID);
+        }
+        set_alpha(window, 255);
+        HIDING.store(false, Ordering::Release);
+        FADING.store(false, Ordering::Release);
+        return;
+    }
+
+    fade.step += 1;
+    let hiding = fade.hiding;
+    let done = fade.step >= fade.total;
+    let hint_after = fade.hint_after;
+    let focus_after = fade.focus_after;
+    let alpha = if hiding {
+        255 - (255 * fade.step / fade.total)
+    } else {
+        (255 * fade.step / fade.total).min(255)
+    };
+    if done {
+        *guard = None;
+    }
+    drop(guard);
+
+    set_alpha(window, alpha as u8);
+
+    if done {
+        unsafe {
+            let _ = KillTimer(tray_hwnd, FADE_TIMER_ID);
+        }
+        if hiding {
+            unsafe {
+                let _ = ShowWindow(window, SW_HIDE);
+            }
+            set_alpha(window, 255);
+            HIDING.store(false, Ordering::Release);
+            FADING.store(false, Ordering::Release);
+            if hint_after {
+                hint_hidden();
+            }
+        } else {
+            set_alpha(window, 255);
+            FADING.store(false, Ordering::Release);
+            if focus_after {
+                unsafe {
+                    let _ = SetForegroundWindow(window);
+                }
+            }
+        }
+    }
 }
 
 /// One-shot balloon that tells the user where the card went.
 pub fn hint_hidden() {
-    if !available() || HINT_SHOWN.swap(true, Ordering::Relaxed) {
+    if !available() || HINT_SHOWN.swap(true, Ordering::AcqRel) {
         return;
     }
-    let window = TRAY_WINDOW.load(Ordering::Relaxed);
+    let window = TRAY_WINDOW.load(Ordering::Acquire);
     if window == 0 {
         return;
     }
@@ -475,14 +599,14 @@ pub fn hint_hidden() {
 }
 
 /// Bring the card back if it is hidden and the icon is gone.
-fn restore_if_hidden() {
+fn restore_if_hidden(tray_hwnd: HWND) {
     let Some(window) = main_window_handle() else {
         return;
     };
     unsafe {
         if !IsWindowVisible(window).as_bool() {
-            show_with_fade(window);
             note_manual_show();
+            start_fade_in(tray_hwnd, false);
         }
     }
 }
@@ -501,7 +625,7 @@ fn main_window(cc: &eframe::CreationContext<'_>) -> Option<isize> {
 /// Remove the icon synchronously: the tray thread's own `NIM_DELETE` can race
 /// with process exit, which leaves a ghost icon in the notification area.
 fn remove_icon() {
-    let window = TRAY_WINDOW.load(Ordering::Relaxed);
+    let window = TRAY_WINDOW.load(Ordering::Acquire);
     if window == 0 {
         return;
     }
@@ -513,7 +637,7 @@ fn remove_icon() {
 }
 
 pub fn shutdown() {
-    let window = TRAY_WINDOW.load(Ordering::Relaxed);
+    let window = TRAY_WINDOW.load(Ordering::Acquire);
     if window == 0 {
         return;
     }
@@ -536,7 +660,8 @@ type TrayResult = windows::core::Result<()>;
 /// restarts. Records whether the shell really owns it.
 unsafe fn add_icon(hwnd: HWND) {
     let (tip, percent, charging) = describe();
-    let icon = battery_icon(percent, charging);
+    let light_taskbar = uses_light_taskbar();
+    let icon = battery_icon(percent, charging, light_taskbar);
     if icon.is_invalid() {
         eprintln!("tray icon: icon creation failed (percent={percent:?})");
     }
@@ -546,9 +671,9 @@ unsafe fn add_icon(hwnd: HWND) {
     // a value here is then really ours.
     windows::Win32::Foundation::SetLastError(windows::Win32::Foundation::WIN32_ERROR(0));
     let added = Shell_NotifyIconW(NIM_ADD, &data).as_bool();
-    TRAY_READY.store(added, Ordering::Relaxed);
+    TRAY_READY.store(added, Ordering::Release);
     if !added {
-        if !FAILURE_REPORTED.swap(true, Ordering::Relaxed) {
+        if !FAILURE_REPORTED.swap(true, Ordering::AcqRel) {
             let level = integrity_level(GetCurrentProcess());
             let shell = shell_integrity();
             let mut session = 0u32;
@@ -579,8 +704,8 @@ unsafe fn add_icon(hwnd: HWND) {
         return;
     }
 
-    store_state(tip, percent, charging);
-    let previous = ICON.swap(icon.0 as isize, Ordering::Relaxed);
+    store_state(tip, percent, charging, light_taskbar);
+    let previous = ICON.swap(icon.0 as isize, Ordering::AcqRel);
     if previous != 0 {
         let _ = DestroyIcon(HICON(previous as *mut core::ffi::c_void));
     }
@@ -612,10 +737,10 @@ unsafe fn run() -> TrayResult {
         hinstance,
         None,
     )?;
-    TRAY_WINDOW.store(hwnd.0 as isize, Ordering::Relaxed);
+    TRAY_WINDOW.store(hwnd.0 as isize, Ordering::Release);
     TASKBAR_CREATED.store(
         RegisterWindowMessageW(w!("TaskbarCreated")),
-        Ordering::Relaxed,
+        Ordering::Release,
     );
 
     // Explorer lives at medium integrity. When this process runs elevated, UIPI
@@ -623,7 +748,7 @@ unsafe fn run() -> TrayResult {
     // the icon would appear but no menu item (including Quit) would react.
     let _ = ChangeWindowMessageFilterEx(hwnd, WM_TRAY, MSGFLT_ALLOW, None);
     let _ = ChangeWindowMessageFilterEx(hwnd, WM_SHOW_REQUEST, MSGFLT_ALLOW, None);
-    let taskbar_created = TASKBAR_CREATED.load(Ordering::Relaxed);
+    let taskbar_created = TASKBAR_CREATED.load(Ordering::Acquire);
     if taskbar_created != 0 {
         let _ = ChangeWindowMessageFilterEx(hwnd, taskbar_created, MSGFLT_ALLOW, None);
     }
@@ -631,7 +756,7 @@ unsafe fn run() -> TrayResult {
     add_icon(hwnd);
 
     // Refresh the tooltip and icon once a second; the shell only needs a
-    // `NIM_MODIFY` when the text actually changed.
+    // `NIM_MODIFY` when the text or system theme actually changed.
     SetTimer(hwnd, TIMER_ID, 1_000, None);
 
     let mut message = MSG::default();
@@ -653,7 +778,7 @@ unsafe extern "system" fn window_proc(
     match message {
         WM_TRAY => {
             match (lparam.0 & 0xFFFF) as u32 {
-                WM_LBUTTONUP | WM_LBUTTONDBLCLK => toggle(),
+                WM_LBUTTONUP | WM_LBUTTONDBLCLK => toggle(hwnd),
                 WM_RBUTTONUP => menu(hwnd),
                 _ => {}
             }
@@ -661,23 +786,35 @@ unsafe extern "system" fn window_proc(
         }
         WM_SHOW_REQUEST => {
             // A second launch asked the running instance to come back.
-            if let Some(window) = main_window_handle() {
-                note_manual_show();
-                show_with_fade(window);
-                let _ = SetForegroundWindow(window);
+            note_manual_show();
+            start_fade_in(hwnd, true);
+            LRESULT(0)
+        }
+        WM_FADE_HIDE => {
+            start_fade_out(hwnd, wparam.0 != 0);
+            LRESULT(0)
+        }
+        WM_SETTINGCHANGE => {
+            // System light/dark theme may have changed; redraw immediately.
+            if TRAY_READY.load(Ordering::Acquire) {
+                refresh(hwnd);
             }
             LRESULT(0)
         }
         WM_TIMER => {
-            let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
-            // Registration can fail transiently (shell not ready yet), and a
-            // low-integrity process can never register at all; retry on a slow
-            // cadence so the menu item becomes usable as soon as it can.
-            if !TRAY_READY.load(Ordering::Relaxed) && ticks.is_multiple_of(RETRY_EVERY_TICKS) {
-                add_icon(hwnd);
+            if wparam.0 == FADE_TIMER_ID {
+                step_fade(hwnd);
+            } else if wparam.0 == TIMER_ID {
+                let ticks = TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+                // Registration can fail transiently (shell not ready yet), and a
+                // low-integrity process can never register at all; retry on a slow
+                // cadence so the menu item becomes usable as soon as it can.
+                if !TRAY_READY.load(Ordering::Acquire) && ticks.is_multiple_of(RETRY_EVERY_TICKS) {
+                    add_icon(hwnd);
+                }
+                refresh(hwnd);
+                auto_hide_tick(hwnd);
             }
-            refresh(hwnd);
-            auto_hide_tick();
             LRESULT(0)
         }
         WM_DESTROY => {
@@ -685,13 +822,13 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         _ => {
-            let taskbar_created = TASKBAR_CREATED.load(Ordering::Relaxed);
+            let taskbar_created = TASKBAR_CREATED.load(Ordering::Acquire);
             if taskbar_created != 0 && message == taskbar_created {
                 // Explorer restarted and dropped every notification icon; put
                 // ours back, and never leave a hidden card without one.
                 add_icon(hwnd);
-                if !TRAY_READY.load(Ordering::Relaxed) {
-                    restore_if_hidden();
+                if !TRAY_READY.load(Ordering::Acquire) {
+                    restore_if_hidden(hwnd);
                 }
                 return LRESULT(0);
             }
@@ -701,14 +838,14 @@ unsafe extern "system" fn window_proc(
 }
 
 fn main_window_handle() -> Option<HWND> {
-    let window = MAIN_WINDOW.load(Ordering::Relaxed);
+    let window = MAIN_WINDOW.load(Ordering::Acquire);
     (window != 0).then_some(HWND(window as *mut core::ffi::c_void))
 }
 
-fn toggle() {
+fn toggle(tray_hwnd: HWND) {
     // A fade owns the window right now; clicking mid-animation used to flip
     // the intended state and leave the card invisible.
-    if FADING.load(Ordering::Relaxed) {
+    if FADING.load(Ordering::Acquire) {
         return;
     }
     let Some(window) = main_window_handle() else {
@@ -717,17 +854,16 @@ fn toggle() {
     unsafe {
         if IsWindowVisible(window).as_bool() {
             note_manual_hide();
-            hide_with_fade(window);
+            start_fade_out(tray_hwnd, false);
         } else {
             note_manual_show();
-            show_with_fade(window);
-            let _ = SetForegroundWindow(window);
+            start_fade_in(tray_hwnd, true);
         }
     }
 }
 
 unsafe fn menu(hwnd: HWND) {
-    if FADING.load(Ordering::Relaxed) {
+    if FADING.load(Ordering::Acquire) {
         return;
     }
     let Ok(menu) = CreatePopupMenu() else {
@@ -776,17 +912,12 @@ unsafe fn menu(hwnd: HWND) {
 
     match command {
         MENU_SHOW => {
-            if let Some(window) = main_window_handle() {
-                note_manual_show();
-                show_with_fade(window);
-                let _ = SetForegroundWindow(window);
-            }
+            note_manual_show();
+            start_fade_in(hwnd, true);
         }
         MENU_HIDE => {
-            if let Some(window) = main_window_handle() {
-                note_manual_hide();
-                hide_with_fade(window);
-            }
+            note_manual_hide();
+            start_fade_out(hwnd, false);
         }
         MENU_QUIT => {
             // A hidden eframe window may never confirm a WM_CLOSE (eframe only
@@ -819,10 +950,11 @@ fn describe() -> (String, Option<u8>, bool) {
     };
 
     let reading = &first.reading;
+    let name = strings.device_name(first);
     let state = strings.charge_state(reading.state);
     let mut text = match reading.percent {
-        Some(percent) => format!("{} {percent}% · {state}", reading.device),
-        None => format!("{} · {state}", reading.device),
+        Some(percent) => format!("{name} {percent}% · {state}"),
+        None => format!("{name} · {state}"),
     };
     if snapshot.len() > 1 {
         text.push_str(&strings.tray_count(snapshot.len()));
@@ -837,22 +969,27 @@ fn describe() -> (String, Option<u8>, bool) {
 
 unsafe fn refresh(hwnd: HWND) {
     let (tip, percent, charging) = describe();
+    let light_taskbar = uses_light_taskbar();
+    let next = TraySnapshot {
+        tip: tip.clone(),
+        percent,
+        charging,
+        light_taskbar,
+    };
     if LAST_STATE
         .lock()
-        .map(|last| {
-            last.as_ref()
-                .is_some_and(|(t, p, c)| *t == tip && *p == percent && *c == charging)
-        })
-        .unwrap_or(false)
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .as_ref()
+        == Some(&next)
     {
         return;
     }
-    store_state(tip.clone(), percent, charging);
+    store_state(tip.clone(), percent, charging, light_taskbar);
 
-    let icon = battery_icon(percent, charging);
+    let icon = battery_icon(percent, charging, light_taskbar);
     let updated = Shell_NotifyIconW(NIM_MODIFY, &notify_data(hwnd, &tip, icon)).as_bool();
-    TRAY_READY.store(updated, Ordering::Relaxed);
-    let previous = ICON.swap(icon.0 as isize, Ordering::Relaxed);
+    TRAY_READY.store(updated, Ordering::Release);
+    let previous = ICON.swap(icon.0 as isize, Ordering::AcqRel);
     if previous != 0 {
         let _ = DestroyIcon(HICON(previous as *mut core::ffi::c_void));
     }
@@ -862,16 +999,21 @@ unsafe fn refresh(hwnd: HWND) {
     // back.
     if !updated {
         add_icon(hwnd);
-        if !TRAY_READY.load(Ordering::Relaxed) {
-            restore_if_hidden();
+        if !TRAY_READY.load(Ordering::Acquire) {
+            restore_if_hidden(hwnd);
         }
     }
 }
 
-fn store_state(tip: String, percent: Option<u8>, charging: bool) {
-    if let Ok(mut last) = LAST_STATE.lock() {
-        *last = Some((tip, percent, charging));
-    }
+fn store_state(tip: String, percent: Option<u8>, charging: bool, light_taskbar: bool) {
+    *LAST_STATE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(TraySnapshot {
+        tip,
+        percent,
+        charging,
+        light_taskbar,
+    });
 }
 
 unsafe fn notify_data(hwnd: HWND, tip: &str, icon: HICON) -> NOTIFYICONDATAW {
@@ -935,10 +1077,9 @@ fn uses_light_taskbar() -> bool {
 }
 
 /// A small battery glyph, filled to `percent`, coloured like the card's accent.
-unsafe fn battery_icon(percent: Option<u8>, charging: bool) -> HICON {
+unsafe fn battery_icon(percent: Option<u8>, charging: bool, light_taskbar: bool) -> HICON {
     let size = icon_glyph::GRID;
-    let pixels =
-        icon_glyph::icon_pixels(size, percent, charging, outline_color(uses_light_taskbar()));
+    let pixels = icon_glyph::icon_pixels(size, percent, charging, outline_color(light_taskbar));
 
     // 1 bpp mask: bit set means "transparent" (alpha == 0).
     let mask_stride = size.div_ceil(16) * 2;

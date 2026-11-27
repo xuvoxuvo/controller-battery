@@ -64,15 +64,15 @@ fn reading_from_slot(slot: u32, battery: &XINPUT_BATTERY_INFORMATION) -> Battery
     };
 
     let kind = if battery.BatteryType == BATTERY_TYPE_ALKALINE {
-        Some("碱性电池".to_string())
+        Some("Alkaline".to_string())
     } else if battery.BatteryType == BATTERY_TYPE_NIMH {
-        Some("镍氢电池".to_string())
+        Some("NiMH".to_string())
     } else {
         None
     };
 
     BatteryReading {
-        device: format!("Xbox 手柄 {}", slot + 1),
+        device: format!("Xbox Controller {}", slot + 1),
         transport,
         percent,
         state,

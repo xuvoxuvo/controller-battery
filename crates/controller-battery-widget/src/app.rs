@@ -6,7 +6,7 @@
 //! transition that reads as aliasing at high DPI.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
@@ -19,13 +19,15 @@ use crate::menu;
 use crate::settings::Settings;
 use crate::tray;
 
-const WIDTH: f32 = 230.0;
+pub const WIDTH: f32 = 230.0;
 const PAD: f32 = 10.0;
 const ROW_HEIGHT: f32 = 48.0;
-const EMPTY_HEIGHT: f32 = PAD * 2.0 + ROW_HEIGHT;
+pub const EMPTY_HEIGHT: f32 = PAD * 2.0 + ROW_HEIGHT;
 /// Show at most this many rows; further devices are summarised.
 const MAX_ROWS: usize = 5;
 const CORNER_RADIUS: f32 = 16.0;
+/// Wait for a moved window to stay still this long before writing settings.
+const POSITION_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 pub struct App {
     shared: Arc<Mutex<Shared>>,
@@ -34,7 +36,10 @@ pub struct App {
     applied_language: Language,
     applied_auto_hide: bool,
     last_saved: Option<egui::Pos2>,
+    pending_pos: Option<(egui::Pos2, Instant)>,
     window_height: f32,
+    /// Cached superellipse polygon for the current card rect.
+    squircle_cache: Option<(Rect, Vec<Pos2>)>,
     /// eframe's window handle, needed to hide the card from the context menu.
     window: Option<isize>,
     /// Hiding runs after the frame, not in the middle of it.
@@ -55,6 +60,10 @@ impl App {
 
         let applied_language = settings.language;
         let applied_auto_hide = settings.auto_hide;
+        let last_saved = settings
+            .window_x
+            .zip(settings.window_y)
+            .map(|(x, y)| egui::pos2(x, y));
 
         let shared = Arc::new(Mutex::new(Shared::default()));
         collector::spawn(shared.clone());
@@ -66,8 +75,10 @@ impl App {
             settings,
             applied_language,
             applied_auto_hide,
-            last_saved: None,
+            last_saved,
+            pending_pos: None,
             window_height: EMPTY_HEIGHT,
+            squircle_cache: None,
             window,
             hide_requested: false,
             menu_requested: false,
@@ -131,16 +142,25 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.request_repaint_after(Duration::from_millis(250));
-
         let devices = collector::snapshot(&self.shared);
-        let error = self.shared.lock().unwrap().error;
+        let error = collector::lock_shared(&self.shared).error;
         let countdown = tray::countdown();
         let strings = i18n::current();
 
+        // Keep repaints light: 1 Hz while hidden, 2 Hz while visible and
+        // steady, and 4 Hz only during the active auto-hide countdown.
+        let repaint_after = if !tray::is_card_visible() {
+            Duration::from_secs(1)
+        } else if countdown.is_some() {
+            Duration::from_millis(250)
+        } else {
+            Duration::from_millis(500)
+        };
+        ctx.request_repaint_after(repaint_after);
+
         // While the auto-hide countdown runs, the card shows the "no controller"
-        // screen instead of grey idle rows with a countdown, so a disconnected
-        // controller never sits around in a faded row.
+        // screen instead of grey idle rows, so a disconnected controller never
+        // sits around in a faded row.
         let show_empty = countdown.is_some() && !devices.is_empty();
         let row_devices: &[(String, DeviceState)] = if show_empty {
             &devices[..0]
@@ -170,6 +190,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(WIDTH, height)));
         }
 
+        let mut drag_stopped = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
@@ -191,14 +212,25 @@ impl eframe::App for App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
                 if response.drag_stopped() {
-                    self.persist_position(ctx);
+                    drag_stopped = true;
                 }
 
                 if response.secondary_clicked() {
                     self.menu_requested = true;
                 }
 
-                paint_card(ui, rect, row_devices, error, overflow, countdown, strings);
+                let shape_rect = rect.shrink(0.5);
+                let outline = self.cached_squircle(shape_rect);
+                paint_card(
+                    ui,
+                    rect,
+                    outline,
+                    row_devices,
+                    error,
+                    overflow,
+                    countdown,
+                    strings,
+                );
             });
 
         // A native popup must open after the frame is painted, or the card
@@ -222,12 +254,11 @@ impl eframe::App for App {
         }
 
         // Hide after the frame is painted, not in the middle of it: the card
-        // keeps its last content and the tray icon brings it back.
+        // keeps its last content and the tray icon brings it back. The one-shot
+        // balloon is shown by `tray.rs` once the fade completes.
         if std::mem::take(&mut self.hide_requested) {
             if let Some(window) = self.window {
-                if tray::hide(window) {
-                    tray::hint_hidden();
-                }
+                let _ = tray::hide(window);
             }
         }
 
@@ -248,23 +279,45 @@ impl eframe::App for App {
 
         if let Some(pos) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) {
             if self.last_saved != Some(pos) {
-                self.settings.window_x = Some(pos.x);
-                self.settings.window_y = Some(pos.y);
-                self.settings.save();
-                self.last_saved = Some(pos);
+                if drag_stopped {
+                    self.save_position(pos);
+                } else {
+                    match self.pending_pos {
+                        Some((pending, since)) if pending == pos => {
+                            if since.elapsed() >= POSITION_SAVE_DEBOUNCE {
+                                self.save_position(pos);
+                            }
+                        }
+                        _ => {
+                            self.pending_pos = Some((pos, Instant::now()));
+                        }
+                    }
+                }
+            } else {
+                self.pending_pos = None;
             }
         }
     }
 }
 
 impl App {
-    fn persist_position(&self, ctx: &egui::Context) {
-        if let Some(rect) = ctx.input(|i| i.viewport().outer_rect) {
-            let mut settings = self.settings.clone();
-            settings.window_x = Some(rect.min.x);
-            settings.window_y = Some(rect.min.y);
-            settings.save();
+    fn save_position(&mut self, pos: egui::Pos2) {
+        self.settings.window_x = Some(pos.x);
+        self.settings.window_y = Some(pos.y);
+        self.settings.save();
+        self.last_saved = Some(pos);
+        self.pending_pos = None;
+    }
+
+    fn cached_squircle(&mut self, shape_rect: Rect) -> Vec<Pos2> {
+        if let Some((cached_rect, ref points)) = self.squircle_cache {
+            if cached_rect == shape_rect {
+                return points.clone();
+            }
         }
+        let points = squircle_points(shape_rect, CORNER_RADIUS);
+        self.squircle_cache = Some((shape_rect, points.clone()));
+        points
     }
 }
 
@@ -302,9 +355,11 @@ fn squircle_points(rect: Rect, radius: f32) -> Vec<Pos2> {
     points
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_card(
     ui: &egui::Ui,
     rect: Rect,
+    outline: Vec<Pos2>,
     devices: &[(String, DeviceState)],
     error: Option<ErrorKind>,
     overflow: usize,
@@ -312,10 +367,6 @@ fn paint_card(
     strings: &Strings,
 ) {
     let painter = ui.painter();
-    // Inset by half a point so the outline stroke is not clipped by the window
-    // edge, which is what produced the hard staircase before.
-    let shape_rect = rect.shrink(0.5);
-    let outline = squircle_points(shape_rect, CORNER_RADIUS);
     painter.add(egui::Shape::convex_polygon(
         outline,
         Color32::from_rgb(22, 22, 26),
@@ -367,7 +418,7 @@ fn paint_card(
 
     for (index, (_key, state)) in devices.iter().take(MAX_ROWS).enumerate() {
         let top = rect.top() + PAD + index as f32 * ROW_HEIGHT;
-        paint_row(painter, rect, top, state, countdown, strings);
+        paint_row(painter, rect, top, state, strings);
 
         if index + 1 < devices.len().min(MAX_ROWS) {
             let y = top + ROW_HEIGHT - 0.5;
@@ -389,15 +440,6 @@ fn paint_card(
             FontId::proportional(9.5),
             Color32::from_rgb(110, 116, 128),
         );
-    }
-}
-
-/// The countdown replaces the row's "idle" text, so no extra strip is needed.
-fn countdown_text(seconds: u8, strings: &Strings) -> String {
-    if seconds == 0 {
-        strings.hiding_now.to_string()
-    } else {
-        strings.hide_countdown(seconds)
     }
 }
 
@@ -435,7 +477,6 @@ fn paint_row(
     card: Rect,
     top: f32,
     state: &DeviceState,
-    countdown: Option<u8>,
     strings: &Strings,
 ) {
     let reading: &BatteryReading = &state.reading;
@@ -446,7 +487,8 @@ fn paint_row(
     // The name owns the first line; trim it with an ellipsis only when the
     // measured width would overflow the card.
     let name_font = FontId::proportional(10.0);
-    let name = fit_width(painter, &reading.device, &name_font, card.width() - 32.0);
+    let raw_name = strings.device_name(state);
+    let name = fit_width(painter, &raw_name, &name_font, card.width() - 32.0);
     painter.text(
         egui::pos2(card.left() + 16.0, top + 3.0),
         Align2::LEFT_TOP,
@@ -476,20 +518,15 @@ fn paint_row(
         },
     );
 
-    // While the card is idle, the countdown takes the place of the "idle"
-    // label instead of adding another row of chrome.
     let core_label = if stale {
-        match countdown {
-            Some(seconds) => countdown_text(seconds, strings),
-            None => strings.idle.to_string(),
-        }
+        strings.idle
     } else if degraded {
-        strings.unknown.to_string()
+        strings.unknown
     } else {
-        strings.charge_state(reading.state).to_string()
+        strings.charge_state(reading.state)
     };
     let state_label = if reading.transport == controller_battery_core::Transport::Unknown {
-        core_label
+        core_label.to_string()
     } else {
         format!("{} · {core_label}", strings.transport(reading.transport))
     };

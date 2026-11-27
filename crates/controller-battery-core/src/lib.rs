@@ -4,12 +4,17 @@
 //! operating-system access:
 //!
 //! * [`dualsense`] — PlayStation 5 DualSense / DualSense Edge HID reports
-//! * [`xinput`] — Xbox-compatible controllers (Windows XInput)
+//! * [`dualshock4`] — PlayStation 4 DualShock 4 HID reports
+//! * [`switch_pro`] — Nintendo Switch Pro Controller & Joy-Con HID reports
 //! * [`eightbitdo`] — 8BitDo Ultimate 2 Wireless in DInput mode (HID)
+//! * [`xinput`] — Xbox-compatible controllers (Windows XInput)
+//! * [`bluetooth`] — Bluetooth LE Battery Service (Windows PnP + WinRT)
 //! * [`model`] — the device-independent reading type shared by all backends
 
 pub mod dualsense;
+pub mod dualshock4;
 pub mod model;
+pub mod switch_pro;
 
 #[cfg(windows)]
 pub mod bluetooth;

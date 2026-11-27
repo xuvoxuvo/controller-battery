@@ -29,14 +29,17 @@ fn main() -> eframe::Result<()> {
     let settings = settings::Settings::load();
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_inner_size([230.0, 92.0])
+        .with_inner_size([app::WIDTH, app::EMPTY_HEIGHT])
+        .with_resizable(true)
         .with_decorations(false)
         .with_transparent(true)
         .with_always_on_top()
         .with_taskbar(false);
 
     if let (Some(x), Some(y)) = (settings.window_x, settings.window_y) {
-        viewport = viewport.with_position([x, y]);
+        if settings::is_position_visible(x, y, app::WIDTH, app::EMPTY_HEIGHT) {
+            viewport = viewport.with_position([x, y]);
+        }
     }
 
     let options = eframe::NativeOptions {

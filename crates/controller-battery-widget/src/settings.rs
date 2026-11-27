@@ -53,6 +53,53 @@ impl Settings {
     }
 }
 
+/// Returns `true` when the saved card rectangle intersects at least one
+/// currently attached monitor. Prevents restoring the card off-screen after a
+/// secondary display is unplugged.
+#[cfg(windows)]
+pub fn is_position_visible(x: f32, y: f32, width: f32, height: f32) -> bool {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Graphics::Gdi::{
+        GetDC, GetDeviceCaps, MonitorFromRect, ReleaseDC, LOGPIXELSX, MONITOR_DEFAULTTONULL,
+    };
+
+    if !x.is_finite() || !y.is_finite() {
+        return false;
+    }
+
+    unsafe {
+        let hdc = GetDC(HWND::default());
+        let scale = if !hdc.is_invalid() {
+            let dpi = GetDeviceCaps(hdc, LOGPIXELSX);
+            let _ = ReleaseDC(HWND::default(), hdc);
+            if dpi > 0 {
+                dpi as f32 / 96.0
+            } else {
+                1.0
+            }
+        } else {
+            1.0
+        };
+
+        // Require an inset portion of the card to overlap a monitor so a card
+        // grazing 1 px off-screen is still reset to a safe default position.
+        let inset_x = (width * 0.2).min(32.0);
+        let inset_y = (height * 0.2).min(20.0);
+        let rect = RECT {
+            left: ((x + inset_x) * scale).round() as i32,
+            top: ((y + inset_y) * scale).round() as i32,
+            right: ((x + width - inset_x) * scale).round() as i32,
+            bottom: ((y + height - inset_y) * scale).round() as i32,
+        };
+        !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid()
+    }
+}
+
+#[cfg(not(windows))]
+pub fn is_position_visible(x: f32, y: f32, _width: f32, _height: f32) -> bool {
+    x.is_finite() && y.is_finite()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

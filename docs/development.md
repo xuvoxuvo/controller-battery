@@ -29,7 +29,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 加 `-Install` 会把产物复制到一个普通目录（默认 `%LOCALAPPDATA%\Programs\ControllerBattery`，可用 `-Destination` 改）：
 
 ```powershell
-.\scripts\build.ps1 -Install -Destination C:\App\ControllerBattery
+.\scripts\build.ps1 -Install -Destination "$env:LOCALAPPDATA\Programs\ControllerBattery"
 ```
 
 这一步不只是图方便：**如果构建目录带 `Low` 完整性标签**（某些沙箱工作区会这样），从里面直接启动的进程也是 Low，`Shell_NotifyIcon` 会被 UIPI 拒绝，托盘图标永远出不来。用 `icacls <目录>` 看到 `Mandatory Label\Low Mandatory Level` 就是这种情况，复制出来的副本会丢掉标签。
@@ -62,6 +62,8 @@ cargo test -p controller-battery-widget -- --ignored --nocapture dump_live_devic
 ```
 crates/controller-battery-core/     协议与设备访问（无 UI，可单测）
   ├─ dualsense.rs                   DualSense 报文解码
+  ├─ dualshock4.rs                  DualShock 4 报文解码
+  ├─ switch_pro.rs                  Switch Pro / Joy-Con 报文解码
   ├─ eightbitdo.rs                  8BitDo DInput 报文（电量/充电）
   ├─ hid.rs                         Windows HID（SetupAPI）
   ├─ xinput.rs                      XInput 电量

@@ -15,7 +15,8 @@ use windows::Win32::Devices::DeviceAndDriverInstallation::{
 };
 use windows::Win32::Devices::HumanInterfaceDevice::{
     HidD_FreePreparsedData, HidD_GetAttributes, HidD_GetFeature, HidD_GetPreparsedData,
-    HidD_GetProductString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS, PHIDP_PREPARSED_DATA,
+    HidD_GetProductString, HidD_GetSerialNumberString, HidP_GetCaps, HIDD_ATTRIBUTES, HIDP_CAPS,
+    PHIDP_PREPARSED_DATA,
 };
 use windows::Win32::Foundation::{CloseHandle, GENERIC_READ, GENERIC_WRITE, HANDLE, HWND};
 use windows::Win32::Storage::FileSystem::{
@@ -53,8 +54,11 @@ fn wide(s: &str) -> Vec<u16> {
         .collect()
 }
 
-/// Read the product string of a HID interface (the name shown in Device Manager).
-pub fn product_name(path: &str) -> Option<String> {
+/// Read a UTF-16 string descriptor (product name or serial number) from a HID path.
+fn query_string(
+    path: &str,
+    getter: unsafe fn(HANDLE, *mut core::ffi::c_void, u32) -> windows::Win32::Foundation::BOOLEAN,
+) -> Option<String> {
     unsafe {
         let handle = CreateFileW(
             PCWSTR(wide(path).as_ptr()),
@@ -68,7 +72,7 @@ pub fn product_name(path: &str) -> Option<String> {
         .ok()?;
 
         let mut buffer = [0u16; 128];
-        let ok = HidD_GetProductString(
+        let ok = getter(
             handle,
             buffer.as_mut_ptr() as *mut core::ffi::c_void,
             (buffer.len() * 2) as u32,
@@ -78,10 +82,22 @@ pub fn product_name(path: &str) -> Option<String> {
         if !ok.as_bool() {
             return None;
         }
-        let end = buffer.iter().position(|&c| c == 0).unwrap_or(0);
-        let name = String::from_utf16_lossy(&buffer[..end]);
-        (!name.is_empty()).then_some(name)
+        let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+        let text = String::from_utf16_lossy(&buffer[..end]);
+        (!text.is_empty()).then_some(text)
     }
+}
+
+/// Read the product string of a HID interface (the name shown in Device Manager).
+pub fn product_name(path: &str) -> Option<String> {
+    query_string(path, HidD_GetProductString)
+}
+
+/// Read the serial number string of a HID interface (often the MAC address on
+/// DualSense / DualShock 4, allowing USB and Bluetooth paths of the same
+/// physical controller to be matched).
+pub fn serial_number(path: &str) -> Option<String> {
+    query_string(path, HidD_GetSerialNumberString)
 }
 
 /// Enumerate every HID interface, with vendor/product ids resolved.
@@ -201,15 +217,15 @@ fn probe(path: &str) -> Option<HidInterface> {
     }
 }
 
-/// Enumerate all connected DualSense / DualSense Edge interfaces.
-///
-/// When the controller is connected over both USB and Bluetooth, both entries
-/// are returned; callers should prefer the USB one.
+/// Enumerate all connected DualSense / DualSense Edge interfaces, ordered with
+/// USB before Bluetooth so callers taking the first entry prefer USB.
 pub fn enumerate_dualsense() -> Vec<HidController> {
-    enumerate_all()
+    let mut found: Vec<HidController> = enumerate_all()
         .into_iter()
         .filter(|i| i.vendor_id == SONY_VENDOR_ID && is_supported_product(i.product_id))
-        .collect()
+        .collect();
+    found.sort_by_key(|c| c.transport() == Transport::Bluetooth);
+    found
 }
 
 /// Bluetooth HID interfaces carry the Bluetooth HID service GUID in their path.

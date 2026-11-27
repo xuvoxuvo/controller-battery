@@ -10,7 +10,7 @@
 ## 特性
 
 - **多手柄**：每只手柄一行，窗口高度自动适配；
-- **多协议**：DualSense / DualSense Edge、Xbox / XInput、8BitDo Ultimate 2 Wireless（DInput）、BLE 手柄；
+- **多协议**：DualSense / DualSense Edge、DualShock 4、Switch Pro / Joy-Con、Xbox / XInput、8BitDo Ultimate 2（DInput）、BLE 手柄；
 - **托盘图标**：显示电量与充电状态，左键显示/隐藏卡片，右键菜单；
 - **多语言**：跟随系统，或切换简体中文 / 繁體中文 / English；
 - **空闲自动隐藏**：可选，倒计时后淡出，手柄恢复上报时淡入；
@@ -22,6 +22,8 @@
 | --- | --- | --- | --- |
 | DualSense（`054C:0CE6`） | USB / 蓝牙 | HID `status[0]` | 10% |
 | DualSense Edge（`054C:0DF2`） | USB / 蓝牙 | HID `status[0]` | 10% |
+| DualShock 4（`054C:05C4` / `09CC` / `0BA0`） | USB / 蓝牙 | HID 状态字节 | 10% |
+| Switch Pro / Joy-Con（`057E:2009` / `2006` / `2007`） | USB / 蓝牙 | HID 报文第 2 字节 | 五档 |
 | Xbox 手柄 | USB / 无线适配器 | XInput | 四档 |
 | 8BitDo 等 XInput 兼容手柄 | 2.4G 接收器 | XInput | 四档（部分型号不提供） |
 | 8BitDo Ultimate 2 Wireless（`2DC8:6012`，DInput） | 2.4G 接收器 / USB 线 | HID 报文第 14 字节 | 1% |
@@ -65,9 +67,7 @@
 在卡片右键菜单勾选后：
 
 - 手柄停止上报约 1 秒判定为空闲；
-- 卡片显示 3 秒倒计时：
-  - 有手柄：「蓝牙 · 3 秒后隐藏」；
-  - 没有手柄：「未检测到手柄，3 秒后隐藏」；
+- 卡片切到「未检测到手柄，3 秒后隐藏」并倒计时；
 - 倒计时结束，约 2 秒淡出；手柄重新上报时淡入；
 - 点击或拖动卡片会立刻取消倒计时，淡出进行中也能打断；
 - 从托盘显示卡片后有 5 秒缓冲，不会立刻又收起；
@@ -83,9 +83,10 @@
 
 | 来源 | 显示方式 |
 | --- | --- |
-| DualSense | 0–10 档位，显示档位中点（档位 2 → 25%，真实区间 20–30%） |
+| DualSense / DualShock 4 | 0–10 档位，显示档位中点（档位 2 → 25%，真实区间 20–30%） |
+| Switch Pro / Joy-Con | 空 / 低 / 中 / 高 / 满 五档 |
 | XInput | 空 / 低 / 中 / 满 四档 |
-| BLE Battery Service | 1% 百分比 |
+| 8BitDo（DInput）/ BLE Battery Service | 1% 百分比 |
 
 这是硬件上限，不是软件取整。
 

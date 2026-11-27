@@ -118,9 +118,25 @@ DInput 模式的外观和 Steam 里显示的「USB 8Bitdo Ultimate 2 Wireless Co
 
 所以想在 2.4G 下看电量，就按住 `B` 开机走 DInput；想要原生 XInput（不依赖 Steam Input）则正常开机，此时只能显示「未报告电量」。蓝牙模式下的电量来自 Windows 的 `DEVPKEY_Bluetooth_Battery`（BLE Battery Service），与本项目读到的数字一致。
 
-## 6. 参考
+## 6. DualShock 4（PS4）
 
-* Linux 内核 `drivers/hid/hid-playstation.c`（DualSense 驱动，含 `status[0]` 位定义）
+支持 PID `0x05C4`（初代）、`0x09CC`（Slim / Pro）和 `0x0BA0`（官方无线接收器），与 Linux `drivers/hid/hid-playstation.c` 一致：
+
+* **USB**（报告 ID `0x01`，64 字节）：状态字节在偏移 **30**；
+* **蓝牙全量**（报告 ID `0x11`，78+ 字节）：状态字节在偏移 **32**；蓝牙连接后读取一次 `0x02` Feature Report 可从简化 `0x01` 切到全量 `0x11`。
+* 状态字节：`bit 4` 表示接入 USB 线；低 4 位在未插线时为 `0..=10`（放电），插线时 `0..=9` 为充电中、`10` 为 100% 充电中、`11` 为已充满。
+
+## 7. Nintendo Switch Pro Controller / Joy-Con
+
+支持任天堂（VID `0x057E`）Pro Controller（`0x2009`）与 Joy-Con L/R（`0x2006` / `0x2007`），与 Linux `drivers/hid/hid-nintendo.c` 一致：
+
+* 标准输入报告（报告 ID `0x21`、`0x30`、`0x31`，长度 ≥ 13 字节）的第 2 字节高 4 位（`report[2] >> 4`）包含电量；
+* `bit 0`（`report[2] & 0x10`）为充电标志，`bits 1..=3`（`(report[2] >> 5) & 0x07`）为 `0..=4` 五档电量（空 / 低 / 中 / 高 / 满）。
+
+## 8. 参考
+
+* Linux 内核 `drivers/hid/hid-playstation.c`（DualSense / DualShock 4 驱动）
+* Linux 内核 `drivers/hid/hid-nintendo.c`（Switch Pro / Joy-Con 驱动）
 * `crystal-hidapi` 的 `dualsense_battery.cr` 示例（`buf[54]`）
 * [ascendedent/8bitdo-Linux-Software](https://github.com/ascendedent/8bitdo-Linux-Software)（8BitDo 协议逆向笔记）
-* 本项目 `crates/controller-battery-core/src/dualsense.rs`、`bluetooth.rs` 的实现与单元测试
+* 本项目 `crates/controller-battery-core/src/` 各协议模块实现与单元测试

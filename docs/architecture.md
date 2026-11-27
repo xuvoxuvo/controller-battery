@@ -15,47 +15,58 @@
 ├─ crates/
 │  ├─ controller-battery-core/        # 设备与协议层（可单测，无 UI）
 │  │  └─ src/
-│  │     ├─ model.rs       # BatteryReading 等公共类型
+│  │     ├─ model.rs       # BatteryReading 等公共类型与 FNV-1a 指纹
 │  │     ├─ dualsense.rs   # DualSense 报文解码
+│  │     ├─ dualshock4.rs  # DualShock 4 报文解码
+│  │     ├─ switch_pro.rs  # Switch Pro / Joy-Con 报文解码
 │  │     ├─ eightbitdo.rs  # 8BitDo DInput 报文（电量/充电）
 │  │     ├─ hid.rs         # Windows HID 枚举/读取（SetupAPI + hid.dll）
-│  │     └─ xinput.rs      # Windows XInput 后端
+│  │     ├─ xinput.rs      # Windows XInput 后端
+│  │     └─ bluetooth.rs   # Windows BLE Battery Service 后端
 │  └─ controller-battery-widget/      # egui 界面 + 采集线程
 │     └─ src/
-│        ├─ app.rs         # 卡片绘制、语言切换
+│        ├─ app.rs         # 卡片绘制、语言切换、超椭圆缓存
+│        ├─ collector.rs   # 多协议后台采集与共享 HID 枚举缓存
 │        ├─ i18n.rs        # 简体中文 / 繁體中文 / English 文案表
+│        ├─ icon_glyph.rs  # 托盘与 exe 共用的电池图标几何
 │        ├─ autohide.rs    # 空闲自动隐藏的状态机（可单测）
 │        ├─ menu.rs        # 卡片右键菜单（原生 Win32）
-│        └─ tray.rs        # 托盘图标、显示/隐藏、自动隐藏定时器
+│        ├─ settings.rs    # 持久化设置与多屏坐标校验
+│        ├─ single.rs      # 命名互斥量单实例保护
+│        └─ tray.rs        # 托盘图标、非阻塞淡入淡出、主题监听
 ├─ docs/
 │  ├─ protocol.md          # 协议实测记录
-│  └─ architecture.md      # 本文
-└─ legacy/powershell/      # 早期 PowerShell 版本（保留作参考，不再维护）
+│  ├─ architecture.md      # 本文
+│  ├─ development.md       # 构建、真机调试与发布
+│  ├─ troubleshooting.md   # 用户侧疑难排查
+│  └─ legacy/powershell/   # 早期 PowerShell 版本（保留作参考，不再维护）
+└─ scripts/build.ps1       # 本地构建与安装脚本
 ```
 
 ## 数据流
 
 ```
- HID 线程（DualSense）  ──┐
- HID 线程（8BitDo DInput）─┤
- XInput 线程             ──┼─> BatteryReading ──> 共享状态(Mutex) ──> egui 界面（每 250ms 重绘）
- 蓝牙线程                ──┘
+ HID 线程（DualSense / DS4 / Switch Pro / 8BitDo）──┐
+ XInput 线程                                       ──┼─> BatteryReading ──> 共享状态(Mutex) ──> egui 界面（自适应重绘）
+ 蓝牙线程（BLE Battery Service）                    ──┘
 ```
 
-* 采集在后台线程中进行，界面线程只读快照，不阻塞 UI；
+* 采集在后台线程中进行，HID 枚举通过短时缓存共享，界面线程只读快照，不阻塞 UI；
 * 每个后端输出统一的 `BatteryReading`：设备名、传输方式、百分比、充电状态、精度、新鲜度、备注。
 
 ## 后端接口
 
-`controller-battery-core` 目前提供两个函数式后端：
+`controller-battery-core` 目前提供以下协议与系统后端：
 
 | 后端 | 平台 | 说明 |
 | --- | --- | --- |
-| `dualsense::decode_input_report` | 全平台（纯解析） | 输入报告 → `DecodedReport` |
+| `dualsense::decode_input_report` | 全平台（纯解析） | DualSense 输入报告 → `DecodedReport` |
+| `dualshock4::decode_input_report` | 全平台（纯解析） | DualShock 4 USB/蓝牙输入报告 → `DecodedReport` |
+| `switch_pro::decode_input_report` | 全平台（纯解析） | Switch Pro / Joy-Con 输入报告 → `PowerState` |
 | `eightbitdo::decode_power_state` | 全平台（纯解析） | 8BitDo DInput 34 字节报告 → 电量/充电 |
-| `hid::HidDevice` | Windows | 枚举/打开/读取报告 |
+| `hid::HidDevice` | Windows | 枚举/打开/读取报告与序列号 |
 | `xinput::poll` | Windows | 读取 4 个 XInput 槽位的电量 |
-| `bluetooth::enumerate` | Windows | 读取 BLE Battery Service 电量 |
+| `bluetooth::enumerate_filtered` | Windows | 按名称前置过滤后读取 BLE Battery Service 电量 |
 
 跨平台计划：
 
@@ -75,7 +86,7 @@
 
 `autohide.rs` 是一个不碰 Win32 的状态机，由托盘线程的 1 秒定时器驱动（卡片隐藏后 egui 可能不再重绘，不能放在 UI 线程）：
 
-* 所有手柄空闲（1 秒无上报，XInput 2 秒）→ 行内显示「3 秒后隐藏」/ 无手柄时显示「未检测到手柄，3 秒后隐藏」→ 2 秒淡出后 `SW_HIDE`；点击/拖动卡片会立即取消倒计时并中止淡出；托盘显示后有 5 秒缓冲；
+* 所有手柄空闲（1 秒无上报，XInput 2 秒）→ 卡片切到「未检测到手柄，3 秒后隐藏」并倒计时 → 2 秒非阻塞淡出后 `SW_HIDE`；点击/拖动卡片会立即取消倒计时并中止淡出；托盘显示后有 5 秒缓冲；
 * 有手柄重新上报 → 自动 `SW_SHOWNORMAL`，不抢焦点；
 * 手动显示/隐藏会清掉自动隐藏的「待命」状态，直到手柄再次活跃，避免卡片在用户眼前自动收起；
 * 没有托盘图标（`TRAY_READY` 为假）时绝不隐藏，否则卡片会失联。

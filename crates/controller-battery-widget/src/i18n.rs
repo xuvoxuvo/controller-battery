@@ -14,7 +14,7 @@ use std::sync::OnceLock;
 use controller_battery_core::model::{ChargeState, Transport};
 use serde::{Deserialize, Serialize};
 
-use crate::collector::ErrorKind;
+use crate::collector::{DeviceState, ErrorKind, FallbackName};
 
 /// Language the user picked in the menu, persisted in `settings.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -167,10 +167,13 @@ pub struct Strings {
     pub hide_to_tray: &'static str,
     pub quit: &'static str,
     pub auto_hide: &'static str,
-    pub hide_countdown_fmt: &'static str,
-    pub hiding_now: &'static str,
     pub language: &'static str,
     pub system_language: &'static str,
+
+    // Fallback device names (when HID product string is unavailable).
+    pub xbox_fallback_fmt: &'static str,
+    pub eightbitdo_fallback: &'static str,
+    pub switch_pro_fallback: &'static str,
 
     // Tray.
     pub tray_show: &'static str,
@@ -223,10 +226,6 @@ impl Strings {
         self.more_devices_fmt.replace("{}", &count.to_string())
     }
 
-    pub fn hide_countdown(&self, seconds: u8) -> String {
-        self.hide_countdown_fmt.replace("{}", &seconds.to_string())
-    }
-
     pub fn no_device_countdown(&self, seconds: u8) -> String {
         self.no_device_countdown_fmt
             .replace("{}", &seconds.to_string())
@@ -234,6 +233,26 @@ impl Strings {
 
     pub fn tray_count(&self, count: usize) -> String {
         self.tray_count_fmt.replace("{}", &count.to_string())
+    }
+
+    pub fn xbox_fallback(&self, slot_number: u32) -> String {
+        self.xbox_fallback_fmt
+            .replace("{}", &slot_number.to_string())
+    }
+
+    /// Display name for a device, localizing generic fallback names when no
+    /// hardware product string is available.
+    pub fn device_name(&self, state: &DeviceState) -> String {
+        match state.fallback_name {
+            Some(FallbackName::Xbox(slot_number)) => self.xbox_fallback(slot_number),
+            Some(FallbackName::EightBitDo) => self.eightbitdo_fallback.to_string(),
+            Some(FallbackName::DualSense) => "DualSense".to_string(),
+            Some(FallbackName::DualShock4) => "DualShock 4".to_string(),
+            Some(FallbackName::SwitchPro) => self.switch_pro_fallback.to_string(),
+            Some(FallbackName::JoyConL) => "Joy-Con (L)".to_string(),
+            Some(FallbackName::JoyConR) => "Joy-Con (R)".to_string(),
+            None => state.reading.device.clone(),
+        }
     }
 }
 
@@ -260,10 +279,11 @@ static SIMPLIFIED_CHINESE: Strings = Strings {
     hide_to_tray: "隐藏到托盘",
     quit: "退出",
     auto_hide: "空闲时自动隐藏",
-    hide_countdown_fmt: "{} 秒后隐藏",
-    hiding_now: "正在隐藏…",
     language: "语言",
     system_language: "跟随系统",
+    xbox_fallback_fmt: "Xbox 手柄 {}",
+    eightbitdo_fallback: "8BitDo 手柄",
+    switch_pro_fallback: "Switch Pro 手柄",
     tray_show: "显示卡片",
     tray_hide: "隐藏卡片",
     hidden_title: "已隐藏到托盘",
@@ -295,10 +315,11 @@ static TRADITIONAL_CHINESE: Strings = Strings {
     hide_to_tray: "隱藏到系統匣",
     quit: "結束",
     auto_hide: "閒置時自動隱藏",
-    hide_countdown_fmt: "{} 秒後隱藏",
-    hiding_now: "正在隱藏…",
     language: "語言",
     system_language: "跟隨系統",
+    xbox_fallback_fmt: "Xbox 手把 {}",
+    eightbitdo_fallback: "8BitDo 手把",
+    switch_pro_fallback: "Switch Pro 手把",
     tray_show: "顯示卡片",
     tray_hide: "隱藏卡片",
     hidden_title: "已隱藏到系統匣",
@@ -330,10 +351,11 @@ static ENGLISH: Strings = Strings {
     hide_to_tray: "Hide to tray",
     quit: "Quit",
     auto_hide: "Auto-hide when idle",
-    hide_countdown_fmt: "Hiding in {} s",
-    hiding_now: "Hiding…",
     language: "Language",
     system_language: "System",
+    xbox_fallback_fmt: "Xbox Controller {}",
+    eightbitdo_fallback: "8BitDo Controller",
+    switch_pro_fallback: "Switch Pro Controller",
     tray_show: "Show card",
     tray_hide: "Hide card",
     hidden_title: "Hidden to tray",
@@ -394,10 +416,10 @@ mod tests {
             assert!(table.more_devices(3).contains('3'), "{name}");
             assert!(!table.tray_count(3).contains("{}"), "{name}");
             assert!(table.tray_count(3).contains('3'), "{name}");
-            assert!(!table.hide_countdown(3).contains("{}"), "{name}");
-            assert!(table.hide_countdown(3).contains('3'), "{name}");
             assert!(!table.no_device_countdown(3).contains("{}"), "{name}");
             assert!(table.no_device_countdown(3).contains('3'), "{name}");
+            assert!(!table.xbox_fallback(2).contains("{}"), "{name}");
+            assert!(table.xbox_fallback(2).contains('2'), "{name}");
         }
     }
 
@@ -450,10 +472,11 @@ mod tests {
                 ("hide_to_tray", self.hide_to_tray),
                 ("quit", self.quit),
                 ("auto_hide", self.auto_hide),
-                ("hide_countdown_fmt", self.hide_countdown_fmt),
-                ("hiding_now", self.hiding_now),
                 ("language", self.language),
                 ("system_language", self.system_language),
+                ("xbox_fallback_fmt", self.xbox_fallback_fmt),
+                ("eightbitdo_fallback", self.eightbitdo_fallback),
+                ("switch_pro_fallback", self.switch_pro_fallback),
                 ("tray_show", self.tray_show),
                 ("tray_hide", self.tray_hide),
                 ("hidden_title", self.hidden_title),
