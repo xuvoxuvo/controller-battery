@@ -309,15 +309,19 @@ impl App {
         self.pending_pos = None;
     }
 
-    fn cached_squircle(&mut self, shape_rect: Rect) -> Vec<Pos2> {
-        if let Some((cached_rect, ref points)) = self.squircle_cache {
-            if cached_rect == shape_rect {
-                return points.clone();
-            }
+    fn cached_squircle(&mut self, shape_rect: Rect) -> &[Pos2] {
+        let stale = self
+            .squircle_cache
+            .as_ref()
+            .is_none_or(|(cached_rect, _)| *cached_rect != shape_rect);
+        if stale {
+            let points = squircle_points(shape_rect, CORNER_RADIUS);
+            &self.squircle_cache.insert((shape_rect, points)).1
+        } else if let Some((_, ref points)) = self.squircle_cache {
+            points
+        } else {
+            &[]
         }
-        let points = squircle_points(shape_rect, CORNER_RADIUS);
-        self.squircle_cache = Some((shape_rect, points.clone()));
-        points
     }
 }
 
@@ -359,7 +363,7 @@ fn squircle_points(rect: Rect, radius: f32) -> Vec<Pos2> {
 fn paint_card(
     ui: &egui::Ui,
     rect: Rect,
-    outline: Vec<Pos2>,
+    outline: &[Pos2],
     devices: &[(String, DeviceState)],
     error: Option<ErrorKind>,
     overflow: usize,
@@ -368,7 +372,7 @@ fn paint_card(
 ) {
     let painter = ui.painter();
     painter.add(egui::Shape::convex_polygon(
-        outline,
+        outline.to_vec(),
         Color32::from_rgb(22, 22, 26),
         Stroke::new(0.8_f32, Color32::from_rgb(56, 58, 66)),
     ));

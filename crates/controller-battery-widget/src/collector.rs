@@ -45,6 +45,9 @@ const HID_HEARTBEAT: Duration = Duration::from_millis(500);
 const HID_CACHE_TTL: Duration = Duration::from_millis(450);
 
 static HID_CACHE: Mutex<Option<(Instant, Vec<HidInterface>)>> = Mutex::new(None);
+/// Path-keyed cache of HID serial numbers so `dedup_prefer_usb` does not open
+/// `CreateFileW` on every 500/700 ms enumeration tick.
+static SERIAL_CACHE: Mutex<Option<HashMap<String, Option<String>>>> = Mutex::new(None);
 
 /// Fallback device name when a hardware HID product string is unavailable.
 /// Kept as structured data so the UI and tray can localize it on language change.
@@ -69,6 +72,10 @@ pub struct DeviceState {
     pub stale_after: Duration,
     /// Localized fallback name used when no hardware product string was found.
     pub fallback_name: Option<FallbackName>,
+    /// True when the collector tracks device presence authoritatively (HID
+    /// enumeration, XInput state, BLE connection). Such entries are removed by
+    /// their collector on disconnect rather than expiring on TTL while idle.
+    pub authoritative: bool,
 }
 
 impl DeviceState {
@@ -116,21 +123,50 @@ fn cached_hid_interfaces() -> Vec<HidInterface> {
         }
     }
     let fresh = hid::enumerate_all();
+    // Prune serial cache entries for paths that are no longer present.
+    let present_paths: HashSet<&str> = fresh.iter().map(|i| i.path.as_str()).collect();
+    let mut serials = lock_mutex(&SERIAL_CACHE);
+    if let Some(map) = serials.as_mut() {
+        map.retain(|path, _| present_paths.contains(path.as_str()));
+    }
+    drop(serials);
+
     *cache = Some((Instant::now(), fresh.clone()));
     fresh
 }
 
+/// Cached `hid::serial_number` lookup per device path (a plugged-in HID path's
+/// serial never changes, so we avoid opening a handle on every 500 ms tick).
+fn cached_serial_number(path: &str) -> Option<String> {
+    {
+        let cache = lock_mutex(&SERIAL_CACHE);
+        if let Some(map) = cache.as_ref() {
+            if let Some(entry) = map.get(path) {
+                return entry.clone();
+            }
+        }
+    }
+
+    let serial = hid::serial_number(path)
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+
+    let mut cache = lock_mutex(&SERIAL_CACHE);
+    cache
+        .get_or_insert_with(HashMap::new)
+        .insert(path.to_string(), serial.clone());
+    serial
+}
+
 /// Deduplicate HID interfaces belonging to the same physical controller (using
-/// serial number when available), preferring USB over Bluetooth.
+/// cached serial number when available), preferring USB over Bluetooth.
 fn dedup_prefer_usb(mut interfaces: Vec<HidInterface>) -> Vec<(String, HidInterface)> {
     interfaces.sort_by_key(|i| i.transport() == Transport::Bluetooth);
 
     let mut seen_ids = HashSet::new();
     let mut out = Vec::with_capacity(interfaces.len());
     for interface in interfaces {
-        let id = hid::serial_number(&interface.path)
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty())
+        let id = cached_serial_number(&interface.path)
             .unwrap_or_else(|| interface.path.to_ascii_lowercase());
         if seen_ids.insert(id.clone()) {
             out.push((id, interface));
@@ -156,6 +192,7 @@ impl Shared {
                 last_update: Instant::now(),
                 stale_after,
                 fallback_name,
+                authoritative: true,
             },
         );
     }
@@ -164,12 +201,15 @@ impl Shared {
         self.devices.remove(key);
     }
 
-    /// Drop entries that have been silent for a while. The grace period keeps
-    /// a controller that briefly stops reporting from making the card flicker.
+    /// Drop non-authoritative entries that have been silent for a while.
+    /// Authoritative sources (HID enumeration, XInput, BLE connection) stay
+    /// visible as "idle" while connected and are removed explicitly on
+    /// disconnect.
     fn prune(&mut self) {
         let now = Instant::now();
         self.devices.retain(|_, state| {
-            now.duration_since(state.last_update) < state.stale_after + ENTRY_TTL
+            state.authoritative
+                || now.duration_since(state.last_update) < state.stale_after + ENTRY_TTL
         });
     }
 }
@@ -506,10 +546,20 @@ fn run_switch_pro_reader(
     key: String,
     interface: HidInterface,
 ) {
-    let Some(device) = HidDevice::open_with_access(&interface, false) else {
+    // Request write access first so we can switch out of simple 0x3F mode (or
+    // run the USB handshake); fall back to read-only when another app owns the
+    // pad and is already keeping it in 0x30 full mode.
+    let Some(device) = HidDevice::open(&interface) else {
         std::thread::sleep(Duration::from_millis(1000));
         return;
     };
+
+    if device.transport == Transport::Usb {
+        for packet in switch_pro::usb_handshake_reports() {
+            let _ = device.write_report(&packet);
+        }
+        let _ = device.write_report(&switch_pro::set_standard_report_mode_report(Transport::Usb));
+    }
 
     let default_fallback = match interface.product_id {
         switch_pro::JOYCON_L_PID => FallbackName::JoyConL,
@@ -522,6 +572,7 @@ fn run_switch_pro_reader(
     };
 
     let mut buffer = [0u8; 128];
+    let mut asked_for_standard_mode = device.transport == Transport::Usb;
     let mut last_fingerprint: Option<u64> = None;
     let mut last_published: Option<(switch_pro::PowerState, Instant)> = None;
 
@@ -531,6 +582,15 @@ fn run_switch_pro_reader(
         }
 
         let slice = &buffer[..read];
+        // Bluetooth Switch controllers default to simple report 0x3F (no
+        // battery byte); lazily request 0x30 full mode once we see 0x3F.
+        if slice.first() == Some(&switch_pro::SIMPLE_REPORT_ID) && !asked_for_standard_mode {
+            asked_for_standard_mode = device.write_report(
+                &switch_pro::set_standard_report_mode_report(device.transport),
+            );
+            continue;
+        }
+
         let Some(power) = switch_pro::decode_input_report(slice) else {
             continue;
         };
@@ -642,27 +702,28 @@ fn spawn_eightbitdo(state: Arc<Mutex<Shared>>) {
     });
 }
 
-/// Product names of controller-like HID devices.
+/// Product names of controller-like HID devices that are not owned by a
+/// dedicated HID backend.
 ///
-/// XInput itself does not expose device names, so we borrow the HID product
-/// string (same name Device Manager shows) to label the slot.
+/// XInput itself does not expose device names, so when a single XInput slot is
+/// active we can borrow the HID product string to label it.
 fn controller_product_names() -> Vec<String> {
-    const VENDORS: [u16; 8] = [
+    const VENDORS: [u16; 7] = [
         0x045E, // Microsoft
         0x2DC8, // 8BitDo
-        0x057E, // Nintendo
         0x0F0D, // Hori
         0x1532, // Razer
         0x28DE, // Valve
         0x0E6F, // PDP
         0x24C6, // PowerA
-                // Sony is deliberately absent: DualSense/DualShock have their
-                // own HID backends and must not be borrowed for an XInput slot.
+                // Sony and Nintendo are deliberately absent: DualSense,
+                // DualShock 4, and Switch Pro/Joy-Con have their own HID
+                // backends and must not be borrowed for an XInput slot.
     ];
 
     let mut names: Vec<String> = Vec::new();
     for interface in cached_hid_interfaces() {
-        if !VENDORS.contains(&interface.vendor_id) {
+        if !VENDORS.contains(&interface.vendor_id) || eightbitdo::is_supported(&interface) {
             continue;
         }
         if let Some(name) = hid::product_name(&interface.path) {
@@ -688,21 +749,31 @@ fn spawn_xinput(state: Arc<Mutex<Shared>>) {
             }
             ticks = ticks.wrapping_add(1);
 
-            let mut active_index = 0usize;
-            for slot in 0..xinput::MAX_SLOTS {
+            let polled: Vec<(u32, Option<BatteryReading>)> = (0..xinput::MAX_SLOTS)
+                .map(|slot| (slot, xinput::poll_slot(slot)))
+                .collect();
+            let active_count = polled.iter().filter(|(_, r)| r.is_some()).count();
+
+            // XInput does not expose VID/PID/serial to map slots to HID paths,
+            // so only borrow a HID product name when the mapping is
+            // unambiguous (a single connected XInput pad with one matching HID
+            // name). Otherwise use the localized "Xbox Controller N" fallback.
+            let borrowed_name = if active_count == 1 && names.len() == 1 {
+                names.first().map(|n| clean_device_name(n))
+            } else {
+                None
+            };
+
+            for (slot, maybe_reading) in polled {
                 let key = format!("xinput:{slot}");
-                match xinput::poll_slot(slot) {
+                match maybe_reading {
                     Some(mut reading) => {
-                        // Assign distinct discovered HID names per connected
-                        // slot; fall back to a localized "Xbox Controller N"
-                        // name instead of cloning the first name across pads.
-                        let fallback = if let Some(name) = names.get(active_index) {
-                            reading.device = clean_device_name(name);
+                        let fallback = if let Some(ref name) = borrowed_name {
+                            reading.device = name.clone();
                             None
                         } else {
                             Some(FallbackName::Xbox(slot + 1))
                         };
-                        active_index += 1;
 
                         let mut shared = lock_shared(&state);
                         shared.upsert(&key, reading, false, XINPUT_STALE_AFTER, fallback);

@@ -118,18 +118,19 @@ DInput 模式的外观和 Steam 里显示的「USB 8Bitdo Ultimate 2 Wireless Co
 
 所以想在 2.4G 下看电量，就按住 `B` 开机走 DInput；想要原生 XInput（不依赖 Steam Input）则正常开机，此时只能显示「未报告电量」。蓝牙模式下的电量来自 Windows 的 `DEVPKEY_Bluetooth_Battery`（BLE Battery Service），与本项目读到的数字一致。
 
-## 6. DualShock 4（PS4）
+## 6. DualShock 4（PS4，待真机验证）
 
-支持 PID `0x05C4`（初代）、`0x09CC`（Slim / Pro）和 `0x0BA0`（官方无线接收器），与 Linux `drivers/hid/hid-playstation.c` 一致：
+支持 PID `0x05C4`（初代）、`0x09CC`（Slim / Pro）和 `0x0BA0`（官方无线接收器），按 Linux `drivers/hid/hid-playstation.c` 实现：
 
 * **USB**（报告 ID `0x01`，64 字节）：状态字节在偏移 **30**；
 * **蓝牙全量**（报告 ID `0x11`，78+ 字节）：状态字节在偏移 **32**；蓝牙连接后读取一次 `0x02` Feature Report 可从简化 `0x01` 切到全量 `0x11`。
 * 状态字节：`bit 4` 表示接入 USB 线；低 4 位在未插线时为 `0..=10`（放电），插线时 `0..=9` 为充电中、`10` 为 100% 充电中、`11` 为已充满。
 
-## 7. Nintendo Switch Pro Controller / Joy-Con
+## 7. Nintendo Switch Pro Controller / Joy-Con（待真机验证）
 
-支持任天堂（VID `0x057E`）Pro Controller（`0x2009`）与 Joy-Con L/R（`0x2006` / `0x2007`），与 Linux `drivers/hid/hid-nintendo.c` 一致：
+支持任天堂（VID `0x057E`）Pro Controller（`0x2009`）与 Joy-Con L/R（`0x2006` / `0x2007`），按 Linux `drivers/hid/hid-nintendo.c` 实现：
 
+* **模式初始化**：蓝牙默认发送简化报文 `0x3F`（不含电量），收到 `0x3F` 时需以写权限发送 `0x01` 输出报告（中性振动字节 + 子命令 `0x03 0x30`）切换到标准全量模式 `0x30`；USB 连接需先发送 `0x80 0x02`（握手）和 `0x80 0x04`（禁用超时并开启 HID 上报），再发 `0x03 0x30`。若设备被其他程序占用导致无写权限，则回退只读监听（依赖对方保持 `0x30` 模式）。
 * 标准输入报告（报告 ID `0x21`、`0x30`、`0x31`，长度 ≥ 13 字节）的第 2 字节高 4 位（`report[2] >> 4`）包含电量；
 * `bit 0`（`report[2] & 0x10`）为充电标志，`bits 1..=3`（`(report[2] >> 5) & 0x07`）为 `0..=4` 五档电量（空 / 低 / 中 / 高 / 满）。
 

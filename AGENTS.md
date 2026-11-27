@@ -71,10 +71,18 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - 电量是 0–10 档位（每档 10%），显示档位中点（`档位 × 10 + 5`），这是硬件上限。
 - 手柄空闲会停止上报，Windows 会重复返回最后一条报文；判断「是否还在刷新」只能靠整条报文的指纹（见 `Shared::prune` 与 `stale_after`）。
 
+### 采集线程架构与多设备约束
+
+- **HID 枚举与序列号缓存**：`collector.rs` 通过 `cached_hid_interfaces()`（450 ms TTL）和按路径缓存的 `SERIAL_CACHE` 共享 SetupAPI 扫描，避免多个采集线程各自频繁 `CreateFileW`。
+- **多设备与 USB 优先**：DualSense、DualShock 4、Switch Pro/Joy-Con 均采用「发现线程 + 按路径读线程」结构，经 `dedup_prefer_usb` 按序列号去重并优先保留 USB（`owners` 映射在 USB 接管时让旧蓝牙读线程自动退出）。
+- **指纹去重 + 心跳节流 + 权威存在性**：HID 读线程用 `model::report_fingerprint`（FNV-1a）过滤 Windows 静止时重复返回的相同报文，并以 500 ms 心跳节流减少加锁；所有权威数据源（HID 枚举 / XInput / BLE 连接）设 `authoritative = true`，空闲后标「空闲」但**不按 `ENTRY_TTL` 删除**，只由各自的断开检测（HID 经 `HID_GONE_GRACE` 1 秒宽限）移除。
+- **XInput 回退名与 `FallbackName`**：`controller_product_names()` 排除 Sony、Nintendo 和 8BitDo DInput 接口，仅在单个 XInput 槽位且唯一匹配到 1 个 HID 名称时借用，其余走 `FallbackName` 在渲染时经 `i18n::device_name()` 本地化，不要在 `core` 或 `collector` 里写死中文设备名。
+- **DualShock 4 / Switch Pro**：DS4 蓝牙打开后会读一次 `0x02` Feature Report 切到 `0x11` 全量报文；Switch Pro / Joy-Con USB 会发送 `0x80 0x02` / `0x80 0x04` 握手及 `0x03 0x30` 模式切换，蓝牙在收到 `0x3F` 简化报文时懒发一次 `0x03 0x30`（两个模块均按 Linux/SDL 规范实现，待真机实测验证）。
+
 ### XInput
 
 - 只提供空/低/中/满四档；很多第三方手柄（8BitDo 2.4G、盖世小鸡等）无线连接时也报 `batteryType=wired`。这个值只代表「不上报电量」，**既不等于有线，也不等于 100%**：显示 `--` 与「未报告电量」。
-- XInput 不提供设备名，名称来自同厂商 HID 的 product string（`hid::product_name`）。**不要把 Sony 的 HID 名称借给 XInput 槽位**，会导致名称串号。
+- XInput 不提供设备名，名称来自同厂商 HID 的 product string（`hid::product_name`）。**不要把 Sony、Nintendo 或 8BitDo DInput 的 HID 名称借给 XInput 槽位**，会导致名称串号。
 
 ### 蓝牙（BLE）
 
@@ -103,8 +111,8 @@ cargo run -p controller-battery-core --example capture -- 2DC8 - 20
 - **卡片右键菜单用原生 Win32 菜单**（`src/menu.rs`），不要换回 `response.context_menu`：egui 的弹出层被限制在卡片那 230×68 的窗口里，菜单会被裁掉，语言子菜单更是放不下。原生菜单自己处理屏幕边缘翻转和浅色/深色主题；菜单项结果以 `menu::Command` 返回，在帧末统一应用（隐藏、退出、语言、自动隐藏）。顺序是「隐藏到托盘 / 空闲时自动隐藏 / 语言 / 退出」；`can_hide` 为假时前两项一起置灰——自动隐藏也要靠托盘图标才能恢复。
 - **所有用户可见文案走 `src/i18n.rs`**：卡片、右键菜单、托盘菜单/悬停提示、气泡共用 zh-CN / zh-TW / en 三张表，不要在界面或托盘里写死字面量。加一门语言 = 加一张表 + `Language::ALL` + 一个 `#[serde(rename)]`；`i18n` 的测试会检查空字段和枚举覆盖。`Language::System` 读 Windows UI 语言（繁体子语言走 zh-TW）。
 - 字体按语言选：zh-TW 先找 `msjh.ttc`，其余先找 `Deng.ttf`；始终保留一个 CJK 回退，因为设备名可能包含中文。切换语言后要重新 `install_fonts`，并让托盘在下一个 1 秒 tick 里刷新提示文本。
-- **空闲自动隐藏在 `src/autohide.rs`**（纯状态机，有单测），由托盘线程的 1 秒定时器驱动，**不要**放进 `App::update`：卡片隐藏后 egui 可能不再重绘，只有托盘定时器保证还在跑。状态机**不缓存 hidden**，`tick` 用 `IsWindowVisible` 的真实可见性判断隐藏/显示；延迟是 `IDLE_BEFORE_HIDE`（3 s，叠加 1 s 空闲判定，XInput 例外为 2 s）。倒计时由 `tray::countdown()` 从共享的 deadline 与界面自己的时钟算出（托盘线程被菜单等阻塞时也不会漏掉 3-2-1 倒计时），期间卡片统一显示「未检测到手柄，N 秒后隐藏」。用户点击/拖动卡片时 App 调 `tray::note_user_interaction()`：立即取消倒计时，并置 `ABORT_FADE` 让已经开始的淡出回退到不透明，而不是等下一次 1 秒 tick 才检查焦点。手动显示后有 `MANUAL_SHOW_HOLD`（5 s）缓冲，手动隐藏会禁止自动回显（`auto_show_allowed`）。`FADING` 期间忽略托盘点击，避免动画中途翻转目标状态。第一次隐藏（自动或手动）会弹一次 `NIF_INFO` 气泡（`HINT_SHOWN`），提示图标可能折叠在「^」里、左键恢复、右键退出——改动提示文案时保持这三点。
-- 显示/隐藏统一走 `tray.rs` 的非阻塞定时器淡入淡出（`start_fade_in` / `start_fade_out` + `FADE_TIMER_ID` 50 ms 步进）：把卡片改成 `WS_EX_LAYERED` 再用 `SetLayeredWindowAttributes` 做淡入淡出（淡出 40 步 × 50 ms = 2 s，淡入 6 步 = 300 ms），DWM 会整体合成，圆角/文字一起渐变；不在 UI 线程或 WndProc 里 `sleep`，避免冻结界面或消息循环，`FADING` 让动画期间的托盘点击被忽略。不要再用裸 `ShowWindow`，也不要清掉 `WS_EX_LAYERED`；淡出结束后 alpha 会恢复成 255，保证下次显示不透明。
+- **空闲自动隐藏在 `src/autohide.rs`**（纯状态机，有单测），由托盘线程的 1 秒定时器驱动，**不要**放进 `App::update`：卡片隐藏后 egui 可能不再重绘，只有托盘定时器保证还在跑。状态机**不缓存 hidden**，`tick` 用 `IsWindowVisible` 的真实可见性判断隐藏/显示；延迟是 `IDLE_BEFORE_HIDE`（3 s，叠加 1 s 空闲判定，XInput 例外为 2 s）。倒计时由 `tray::countdown()` 从共享的 deadline 与界面自己的时钟算出（托盘线程被菜单等阻塞时也不会漏掉 3-2-1 倒计时），期间卡片统一显示「未检测到手柄，N 秒后隐藏」。用户点击/拖动卡片时 App 调 `tray::note_user_interaction()`：立即取消倒计时，并置 `ABORT_FADE` 让已经开始的淡出回退到不透明，而不是等下一次 1 秒 tick 才检查焦点。手动显示后有 `MANUAL_SHOW_HOLD`（5 s）缓冲，手动隐藏会禁止自动回显（`auto_show_allowed`）。`FADING` 期间忽略托盘点击，避免动画中途翻转目标状态。第一次通过卡片右键菜单或自动隐藏时会在淡出完成后弹一次 `NIF_INFO` 气泡（`HINT_SHOWN`），提示图标可能折叠在「^」里、左键恢复、右键退出（从托盘本身点隐藏时不弹，用户已看到托盘图标）——改动提示文案时保持这三点。
+- 显示/隐藏统一走 `tray.rs` 的非阻塞定时器淡入淡出（`start_fade_in` / `start_fade_out` + `FADE_TIMER_ID` 50 ms 步进）：把卡片改成 `WS_EX_LAYERED` 再用 `SetLayeredWindowAttributes` 做淡入淡出（淡出 40 步 × 50 ms = 2 s，淡入 6 步 = 300 ms），DWM 会整体合成，圆角/文字一起渐变；不在 UI 线程或 WndProc 里 `sleep`，避免冻结界面或消息循环，`SetTimer` 失败时立即完成并复位 `FADING`；卡片已可见时 `start_fade_in` 不把 alpha 归零（避免单实例唤醒闪烁）；图标丢失时的兜底 `restore_if_hidden` 必须强行取消进行中的淡出并 `ShowWindow`，绝不能被 `FADING` 拦截。不要再用裸 `ShowWindow` 替代常规动画，也不要清掉 `WS_EX_LAYERED`；淡出结束后 alpha 会恢复成 255，保证下次显示不透明。
 
 ## 图标与版本信息
 

@@ -22,8 +22,8 @@
 | --- | --- | --- | --- |
 | DualSense（`054C:0CE6`） | USB / 蓝牙 | HID `status[0]` | 10% |
 | DualSense Edge（`054C:0DF2`） | USB / 蓝牙 | HID `status[0]` | 10% |
-| DualShock 4（`054C:05C4` / `09CC` / `0BA0`） | USB / 蓝牙 | HID 状态字节 | 10% |
-| Switch Pro / Joy-Con（`057E:2009` / `2006` / `2007`） | USB / 蓝牙 | HID 报文第 2 字节 | 五档 |
+| DualShock 4（`054C:05C4` / `09CC` / `0BA0`） | USB / 蓝牙（实验性） | HID 状态字节 | 10% |
+| Switch Pro / Joy-Con（`057E:2009` / `2006` / `2007`） | USB / 蓝牙（实验性） | HID 报文第 2 字节 | 五档 |
 | Xbox 手柄 | USB / 无线适配器 | XInput | 四档 |
 | 8BitDo 等 XInput 兼容手柄 | 2.4G 接收器 | XInput | 四档（部分型号不提供） |
 | 8BitDo Ultimate 2 Wireless（`2DC8:6012`，DInput） | 2.4G 接收器 / USB 线 | HID 报文第 14 字节 | 1% |
@@ -95,7 +95,8 @@
 - **手柄空闲**：停止上报后数字不再变化，插拔充电线也不触发刷新——按键或摇杆才会更新；
 - **蓝牙 DualSense**：偶尔发送「简化报文」，电量不刷新；程序会尝试切回全量报文，失败时显示 `≈` 与「状态未知」；
 - **第三方手柄**：部分型号（如盖世小鸡）无线连接时不上报电量，显示 `--` 与「未报告电量」；切到蓝牙通常能读到；
-- **8BitDo Ultimate 2**：只有按住 `B` 开机（DInput 模式）才上报电量；正常开机走原生 XInput，读不到电量。
+- **8BitDo Ultimate 2**：只有按住 `B` 开机（DInput 模式）才上报电量；正常开机走原生 XInput，读不到电量；
+- **DualShock 4 / Switch Pro / Joy-Con**：按开源内核协议实现并含报文单测，尚未经真机实测；Switch Pro 首次接入需要切换输入报文模式，若被其他软件独占可能回退只读。
 
 协议细节见 [docs/protocol.md](docs/protocol.md)。
 

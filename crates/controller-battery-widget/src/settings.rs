@@ -54,22 +54,36 @@ impl Settings {
 }
 
 /// Returns `true` when the saved card rectangle intersects at least one
-/// currently attached monitor. Prevents restoring the card off-screen after a
-/// secondary display is unplugged.
+/// currently attached monitor's work area. Checks each monitor with both its
+/// own effective DPI and the primary monitor DPI so mixed-DPI multi-monitor
+/// setups are not falsely reset.
 #[cfg(windows)]
 pub fn is_position_visible(x: f32, y: f32, width: f32, height: f32) -> bool {
-    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows::Win32::Graphics::Gdi::{
-        GetDC, GetDeviceCaps, MonitorFromRect, ReleaseDC, LOGPIXELSX, MONITOR_DEFAULTTONULL,
+        EnumDisplayMonitors, GetDC, GetDeviceCaps, GetMonitorInfoW, ReleaseDC, HDC, HMONITOR,
+        LOGPIXELSX, MONITORINFO,
     };
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 
     if !x.is_finite() || !y.is_finite() {
         return false;
     }
 
+    // Require an inset portion of the card to overlap a monitor so a card
+    // grazing 1 px off-screen is still reset to a safe default position.
+    let inset_x = (width * 0.2).min(32.0);
+    let inset_y = (height * 0.2).min(20.0);
+    let card = (
+        x + inset_x,
+        y + inset_y,
+        x + width - inset_x,
+        y + height - inset_y,
+    );
+
     unsafe {
         let hdc = GetDC(HWND::default());
-        let scale = if !hdc.is_invalid() {
+        let primary_scale = if !hdc.is_invalid() {
             let dpi = GetDeviceCaps(hdc, LOGPIXELSX);
             let _ = ReleaseDC(HWND::default(), hdc);
             if dpi > 0 {
@@ -81,17 +95,65 @@ pub fn is_position_visible(x: f32, y: f32, width: f32, height: f32) -> bool {
             1.0
         };
 
-        // Require an inset portion of the card to overlap a monitor so a card
-        // grazing 1 px off-screen is still reset to a safe default position.
-        let inset_x = (width * 0.2).min(32.0);
-        let inset_y = (height * 0.2).min(20.0);
-        let rect = RECT {
-            left: ((x + inset_x) * scale).round() as i32,
-            top: ((y + inset_y) * scale).round() as i32,
-            right: ((x + width - inset_x) * scale).round() as i32,
-            bottom: ((y + height - inset_y) * scale).round() as i32,
+        struct State {
+            card: (f32, f32, f32, f32),
+            primary_scale: f32,
+            visible: bool,
+        }
+
+        unsafe extern "system" fn callback(
+            monitor: HMONITOR,
+            _hdc: HDC,
+            _clip: *mut RECT,
+            lparam: LPARAM,
+        ) -> BOOL {
+            let state = &mut *(lparam.0 as *mut State);
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+                return BOOL(1);
+            }
+
+            let mut dpi_x = 0u32;
+            let mut dpi_y = 0u32;
+            let monitor_scale =
+                if GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y).is_ok()
+                    && dpi_x > 0
+                {
+                    dpi_x as f32 / 96.0
+                } else {
+                    state.primary_scale
+                };
+
+            let work = info.rcWork;
+            let (l, t, r, b) = state.card;
+            for scale in [monitor_scale, state.primary_scale] {
+                let pl = (l * scale).round() as i32;
+                let pt = (t * scale).round() as i32;
+                let pr = (r * scale).round() as i32;
+                let pb = (b * scale).round() as i32;
+                if pl < work.right && pr > work.left && pt < work.bottom && pb > work.top {
+                    state.visible = true;
+                    return BOOL(0);
+                }
+            }
+            BOOL(1)
+        }
+
+        let mut state = State {
+            card,
+            primary_scale,
+            visible: false,
         };
-        !MonitorFromRect(&rect, MONITOR_DEFAULTTONULL).is_invalid()
+        let _ = EnumDisplayMonitors(
+            HDC::default(),
+            None,
+            Some(callback),
+            LPARAM(&mut state as *mut State as isize),
+        );
+        state.visible
     }
 }
 

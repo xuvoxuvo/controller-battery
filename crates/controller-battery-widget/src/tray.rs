@@ -424,15 +424,20 @@ fn start_fade_out(tray_hwnd: HWND, hint_after: bool) {
     ABORT_FADE.store(false, Ordering::Release);
     ensure_fade_ready(window);
 
-    if !FADE_READY.load(Ordering::Acquire) {
+    let finish_immediately = || {
         unsafe {
             let _ = ShowWindow(window, SW_HIDE);
         }
+        set_alpha(window, 255);
         HIDING.store(false, Ordering::Release);
         FADING.store(false, Ordering::Release);
         if hint_after {
             hint_hidden();
         }
+    };
+
+    if !FADE_READY.load(Ordering::Acquire) {
+        finish_immediately();
         return;
     }
 
@@ -445,8 +450,12 @@ fn start_fade_out(tray_hwnd: HWND, hint_after: bool) {
         hint_after,
         focus_after: false,
     });
-    unsafe {
-        SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None);
+    // If timer creation fails, finish immediately so `FADING` can never get stuck.
+    if unsafe { SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None) } == 0 {
+        *ACTIVE_FADE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        finish_immediately();
     }
 }
 
@@ -455,6 +464,32 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
     let Some(window) = main_window_handle() else {
         return;
     };
+
+    // If a fade-out is in progress (e.g. second launch wakes the card mid-fade),
+    // cancel it cleanly and restore full opacity instead of flashing to alpha 0.
+    if HIDING.load(Ordering::Acquire) {
+        cancel_active_fade(tray_hwnd);
+        set_alpha(window, 255);
+        unsafe {
+            let _ = ShowWindow(window, SW_SHOWNORMAL);
+            if focus_after {
+                let _ = SetForegroundWindow(window);
+            }
+        }
+        return;
+    }
+
+    // Already visible and steady: avoid flashing alpha 0 -> 255 on single-instance wake.
+    if unsafe { IsWindowVisible(window).as_bool() } {
+        set_alpha(window, 255);
+        if focus_after {
+            unsafe {
+                let _ = SetForegroundWindow(window);
+            }
+        }
+        return;
+    }
+
     if FADING.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -462,21 +497,25 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
     ABORT_FADE.store(false, Ordering::Release);
     ensure_fade_ready(window);
 
-    if FADE_READY.load(Ordering::Acquire) {
-        set_alpha(window, 0);
-    }
-    unsafe {
-        let _ = ShowWindow(window, SW_SHOWNORMAL);
-    }
-
-    if !FADE_READY.load(Ordering::Acquire) {
-        if focus_after {
-            unsafe {
+    let finish_immediately = || {
+        set_alpha(window, 255);
+        unsafe {
+            let _ = ShowWindow(window, SW_SHOWNORMAL);
+            if focus_after {
                 let _ = SetForegroundWindow(window);
             }
         }
         FADING.store(false, Ordering::Release);
+    };
+
+    if !FADE_READY.load(Ordering::Acquire) {
+        finish_immediately();
         return;
+    }
+
+    set_alpha(window, 0);
+    unsafe {
+        let _ = ShowWindow(window, SW_SHOWNORMAL);
     }
 
     *ACTIVE_FADE
@@ -488,9 +527,25 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
         hint_after: false,
         focus_after,
     });
-    unsafe {
-        SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None);
+    if unsafe { SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None) } == 0 {
+        *ACTIVE_FADE
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        finish_immediately();
     }
+}
+
+/// Stop any running fade timer and reset fade flags.
+fn cancel_active_fade(tray_hwnd: HWND) {
+    unsafe {
+        let _ = KillTimer(tray_hwnd, FADE_TIMER_ID);
+    }
+    *ACTIVE_FADE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    ABORT_FADE.store(false, Ordering::Release);
+    HIDING.store(false, Ordering::Release);
+    FADING.store(false, Ordering::Release);
 }
 
 /// Advance the active fade animation by one 50 ms frame.
@@ -598,16 +653,22 @@ pub fn hint_hidden() {
     }
 }
 
-/// Bring the card back if it is hidden and the icon is gone.
+/// Bring the card back unconditionally if it is hidden (or fading out) and the
+/// tray icon is gone. Must never be blocked by `FADING`, or a hidden card
+/// without an icon would become unreachable.
 fn restore_if_hidden(tray_hwnd: HWND) {
     let Some(window) = main_window_handle() else {
         return;
     };
-    unsafe {
-        if !IsWindowVisible(window).as_bool() {
-            note_manual_show();
-            start_fade_in(tray_hwnd, false);
+    let hidden_or_hiding =
+        unsafe { !IsWindowVisible(window).as_bool() } || HIDING.load(Ordering::Acquire);
+    if hidden_or_hiding {
+        cancel_active_fade(tray_hwnd);
+        set_alpha(window, 255);
+        unsafe {
+            let _ = ShowWindow(window, SW_SHOWNORMAL);
         }
+        note_manual_show();
     }
 }
 

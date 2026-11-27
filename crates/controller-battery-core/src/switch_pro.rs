@@ -10,7 +10,7 @@
 //! * `bits 1..=3` (`(report[2] >> 5) & 0x07`): coarse level `0..=4`
 //!   (empty / low / medium / high / full).
 
-use crate::model::{ChargeState, Precision};
+use crate::model::{ChargeState, Precision, Transport};
 
 /// Nintendo vendor id.
 pub const NINTENDO_VENDOR_ID: u16 = 0x057E;
@@ -20,6 +20,9 @@ pub const JOYCON_L_PID: u16 = 0x2006;
 pub const JOYCON_R_PID: u16 = 0x2007;
 /// Nintendo Switch Pro Controller.
 pub const PRO_CONTROLLER_PID: u16 = 0x2009;
+/// Simple HID input report id (default over Bluetooth before mode switch; has
+/// no battery field).
+pub const SIMPLE_REPORT_ID: u8 = 0x3F;
 
 /// Returns `true` if the vendor/product id is a supported Switch controller.
 pub fn is_supported_product(vendor_id: u16, product_id: u16) -> bool {
@@ -71,6 +74,39 @@ pub fn decode_input_report(report: &[u8]) -> Option<PowerState> {
     })
 }
 
+/// Build the output report that switches a Switch Pro Controller / Joy-Con from
+/// simple HID mode (`0x3F`, no battery field) into standard full mode (`0x30`,
+/// carries battery in byte 2).
+///
+/// Rumble bytes (`2..10`) are set to the neutral/silent pattern so the pad does
+/// not vibrate or change LEDs.
+pub fn set_standard_report_mode_report(transport: Transport) -> Vec<u8> {
+    let len = if transport == Transport::Usb { 64 } else { 49 };
+    let mut report = vec![0u8; len];
+    report[0] = 0x01; // output report: rumble + subcommand
+    report[1] = 0x00; // packet counter
+                      // Neutral rumble data (left & right), per Linux `hid-nintendo.c`.
+    report[2..10].copy_from_slice(&[0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40]);
+    report[10] = 0x03; // subcommand: SET_INPUT_REPORT_MODE
+    report[11] = 0x30; // standard full mode
+    report
+}
+
+/// USB initialization handshake packets (`0x80 0x02` handshake + `0x80 0x04`
+/// enable HID reports without timeout) required before a USB-connected Switch
+/// Pro Controller starts emitting `0x30` input reports.
+pub fn usb_handshake_reports() -> [[u8; 64]; 2] {
+    let mut handshake = [0u8; 64];
+    handshake[0] = 0x80;
+    handshake[1] = 0x02;
+
+    let mut enable_hid = [0u8; 64];
+    enable_hid[0] = 0x80;
+    enable_hid[1] = 0x04;
+
+    [handshake, enable_hid]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,5 +148,27 @@ mod tests {
         // Level 5 is out of range.
         let invalid = sample_report(0x30, 5 << 1);
         assert!(decode_input_report(&invalid).is_none());
+    }
+
+    #[test]
+    fn builds_standard_mode_and_usb_handshake_reports() {
+        let bt = set_standard_report_mode_report(Transport::Bluetooth);
+        assert_eq!(bt.len(), 49);
+        assert_eq!(bt[0], 0x01);
+        assert_eq!(
+            &bt[2..10],
+            &[0x00, 0x01, 0x40, 0x40, 0x00, 0x01, 0x40, 0x40]
+        );
+        assert_eq!(bt[10], 0x03);
+        assert_eq!(bt[11], 0x30);
+
+        let usb = set_standard_report_mode_report(Transport::Usb);
+        assert_eq!(usb.len(), 64);
+        assert_eq!(usb[10], 0x03);
+        assert_eq!(usb[11], 0x30);
+
+        let [handshake, enable] = usb_handshake_reports();
+        assert_eq!(&handshake[..2], &[0x80, 0x02]);
+        assert_eq!(&enable[..2], &[0x80, 0x04]);
     }
 }
