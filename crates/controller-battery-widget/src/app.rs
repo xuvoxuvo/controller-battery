@@ -148,6 +148,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(level) = tray::take_pending_window_level() {
             self.settings.window_level = level;
+            self.applied_window_level = level;
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level.to_egui()));
         }
 
         let devices = collector::snapshot(&self.shared);
@@ -269,9 +271,18 @@ impl eframe::App for App {
                     }
                     None => {}
                 }
-                // `menu::show` calls `SetForegroundWindow(card)` so clicks
-                // outside dismiss the popup; drop back to bottom if needed.
-                if self.settings.window_level == WindowLevel::AlwaysOnBottom {
+                // Apply window-level changes immediately before enforcing z-order
+                // so `tray.rs` already sees the new level.
+                if self.settings.window_level != self.applied_window_level {
+                    self.applied_window_level = self.settings.window_level;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                        self.applied_window_level.to_egui(),
+                    ));
+                    tray::set_window_level(self.applied_window_level);
+                    self.settings.save();
+                } else if self.settings.window_level == WindowLevel::AlwaysOnBottom {
+                    // `menu::show` calls `SetForegroundWindow(card)` so clicks
+                    // outside dismiss the popup; drop back to bottom if needed.
                     tray::enforce_bottom_if_needed();
                 }
             }

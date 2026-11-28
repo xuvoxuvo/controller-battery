@@ -76,8 +76,37 @@ fn config_path() -> Option<PathBuf> {
     Some(data_dir()?.join("settings.json"))
 }
 
+/// Serialises reads and writes so the UI thread and the tray thread never race
+/// when persisting settings.
+static FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl Settings {
     pub fn load() -> Self {
+        let _guard = FILE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::load_unlocked()
+    }
+
+    pub fn save(&self) {
+        let _guard = FILE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.save_unlocked();
+    }
+
+    /// Persist only `window_level` on disk immediately (used by the tray thread
+    /// when the card may be hidden and `App::update` is not running).
+    pub fn save_window_level(level: WindowLevel) {
+        let _guard = FILE_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut settings = Self::load_unlocked();
+        settings.window_level = level;
+        settings.save_unlocked();
+    }
+
+    fn load_unlocked() -> Self {
         let Some(path) = config_path() else {
             return Self::default();
         };
@@ -87,7 +116,7 @@ impl Settings {
         serde_json::from_str(&text).unwrap_or_default()
     }
 
-    pub fn save(&self) {
+    fn save_unlocked(&self) {
         let Some(path) = config_path() else {
             return;
         };

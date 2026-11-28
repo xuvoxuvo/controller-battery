@@ -46,8 +46,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
     SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, TrackPopupMenuEx, TranslateMessage, GWL_EXSTYLE, HICON, HWND_BOTTOM,
-    HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS, MF_CHECKED,
-    MF_ENABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
+    HWND_NOTOPMOST, HWND_TOPMOST, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS, MF_CHECKED, MF_ENABLED,
+    MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
     SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY,
     WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
@@ -332,15 +332,6 @@ fn apply_window_level_win32(window: HWND, level: WindowLevel) {
                 let _ = SetWindowPos(
                     window,
                     HWND_NOTOPMOST,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                );
-                let _ = SetWindowPos(
-                    window,
-                    HWND_TOP,
                     0,
                     0,
                     0,
@@ -1172,6 +1163,7 @@ unsafe fn menu(hwnd: HWND) {
         id if (MENU_LEVEL..MENU_LEVEL + WindowLevel::ALL.len()).contains(&id) => {
             let level = WindowLevel::ALL[id - MENU_LEVEL];
             set_window_level(level);
+            crate::settings::Settings::save_window_level(level);
             PENDING_WINDOW_LEVEL.store(level.as_u8(), Ordering::Release);
         }
         _ => {}
