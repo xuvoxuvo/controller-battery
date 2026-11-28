@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-28
+
+### Added
+
+- **窗口层级**：卡片与托盘右键菜单支持「始终置顶 / 普通窗口 / 始终置底」，默认置顶并写入 `settings.json`；
+- 置底模式下点击、拖动、右键菜单后自动补 `HWND_BOTTOM`，显示/恢复使用 `SW_SHOWNOACTIVATE`，托盘定时器在非前台时兜底，避免被普通窗口盖住后无法操作。
+
+### Changed
+
+- `Settings` 改为 UI 线程与托盘线程共享的 `Arc<Mutex<Settings>>`，所有修改持锁完成，不再出现双份状态互相覆盖；
+- 托盘切换层级立即同步落盘；`Settings::save()` 返回成功与否，写盘失败会记录并重试；
+- 「普通窗口」只取消 topmost（`HWND_NOTOPMOST`），不再主动 `HWND_TOP` 抬高。
+
+### Fixed
+
+- 修复切换窗口层级后淡入/淡出失效：`winit` 的 `WindowFlags::apply_diff` 会重写 `GWL_EXSTYLE` 并清掉 `WS_EX_LAYERED`；现在每次淡入淡出前检查实时样式，丢失时立即补回，`SetLayeredWindowAttributes` 失败也会补样式后重试；
+- 修复托盘改层级在卡片隐藏时未持久化、可能被 UI 侧旧状态覆盖的问题。
+
 ## [0.3.1] - 2026-11-27
 
 ### Added
