@@ -20,6 +20,7 @@ use crate::settings::{Settings, WindowLevel};
 const MENU_AUTO_HIDE: usize = 1;
 const MENU_HIDE: usize = 2;
 const MENU_QUIT: usize = 3;
+const MENU_AUTOSTART: usize = 4;
 /// Language entries occupy `MENU_LANGUAGE + index into Language::ALL`.
 const MENU_LANGUAGE: usize = 10;
 /// Window level entries occupy `MENU_LEVEL + index into WindowLevel::ALL`.
@@ -28,6 +29,7 @@ const MENU_LEVEL: usize = 30;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     ToggleAutoHide,
+    ToggleAutostart,
     SetWindowLevel(WindowLevel),
     SetLanguage(Language),
     HideToTray,
@@ -37,8 +39,14 @@ pub enum Command {
 /// Show the menu at the cursor and return the chosen item.
 ///
 /// `can_hide` is false while the shell does not own the tray icon: without it a
-/// hidden card could not be brought back.
-pub fn show(window: isize, settings: &Settings, can_hide: bool) -> Option<Command> {
+/// hidden card could not be brought back. `autostart` is the current registry
+/// state for the login entry.
+pub fn show(
+    window: isize,
+    settings: &Settings,
+    can_hide: bool,
+    autostart: bool,
+) -> Option<Command> {
     let strings = i18n::current();
     let card = HWND(window as *mut core::ffi::c_void);
     if card.is_invalid() {
@@ -108,6 +116,20 @@ pub fn show(window: isize, settings: &Settings, can_hide: bool) -> Option<Comman
             };
         let _ = AppendMenuW(menu, auto_flags, MENU_AUTO_HIDE, PCWSTR(auto_hide.as_ptr()));
 
+        let autostart_text = wide(strings.autostart);
+        let autostart_flags = MF_STRING
+            | if autostart {
+                MF_CHECKED
+            } else {
+                MENU_ITEM_FLAGS(0)
+            };
+        let _ = AppendMenuW(
+            menu,
+            autostart_flags,
+            MENU_AUTOSTART,
+            PCWSTR(autostart_text.as_ptr()),
+        );
+
         let window_level = wide(strings.window_level);
         let _ = AppendMenuW(
             menu,
@@ -151,6 +173,7 @@ pub fn show(window: isize, settings: &Settings, can_hide: bool) -> Option<Comman
 
         match picked {
             MENU_AUTO_HIDE => Some(Command::ToggleAutoHide),
+            MENU_AUTOSTART => Some(Command::ToggleAutostart),
             MENU_HIDE => Some(Command::HideToTray),
             MENU_QUIT => Some(Command::Quit),
             id if (MENU_LEVEL..MENU_LEVEL + WindowLevel::ALL.len()).contains(&id) => {

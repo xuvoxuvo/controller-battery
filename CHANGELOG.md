@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **开机自启动**：卡片与托盘右键菜单可勾选，写入 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`（值名 `ControllerBattery`，路径取当前 exe）；取消勾选即删除启动项。
+
 ## [0.3.2] - 2026-11-28
 
 ### Added

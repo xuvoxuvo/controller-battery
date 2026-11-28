@@ -13,6 +13,7 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 use controller_battery_core::model::{BatteryReading, ChargeState};
 
+use crate::autostart;
 use crate::collector::{self, DeviceState, ErrorKind, Shared};
 use crate::i18n::{self, Language, Resolved, Strings};
 use crate::menu;
@@ -262,7 +263,12 @@ impl eframe::App for App {
         if std::mem::take(&mut self.menu_requested) {
             if let Some(window) = self.window {
                 let snapshot = self.lock_settings().clone();
-                let command = menu::show(window, &snapshot, tray::available());
+                let command = menu::show(
+                    window,
+                    &snapshot,
+                    tray::available(),
+                    autostart::is_enabled(),
+                );
                 let mut changed_level = false;
                 match command {
                     Some(menu::Command::ToggleAutoHide) => {
@@ -273,6 +279,9 @@ impl eframe::App for App {
                             guard.auto_hide
                         };
                         tray::set_auto_hide(enabled);
+                    }
+                    Some(menu::Command::ToggleAutostart) => {
+                        let _ = autostart::set_enabled(!autostart::is_enabled());
                     }
                     Some(menu::Command::SetWindowLevel(level)) => {
                         {

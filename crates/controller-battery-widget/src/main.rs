@@ -7,6 +7,7 @@
 
 mod app;
 mod autohide;
+mod autostart;
 mod collector;
 mod i18n;
 mod icon_glyph;

@@ -55,6 +55,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::autohide::{Action, AutoHide};
+use crate::autostart;
 use crate::collector::{self, Shared};
 use crate::i18n;
 use crate::icon_glyph;
@@ -73,6 +74,7 @@ const ICON_ID: u32 = 1;
 const MENU_SHOW: usize = 1;
 const MENU_HIDE: usize = 2;
 const MENU_QUIT: usize = 3;
+const MENU_AUTOSTART: usize = 4;
 /// Window level entries occupy `MENU_LEVEL + index into WindowLevel::ALL`.
 const MENU_LEVEL: usize = 10;
 
@@ -1142,6 +1144,19 @@ unsafe fn menu(hwnd: HWND) {
         PCWSTR(hide_text.as_ptr()),
     );
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let autostart_text = wide(strings.autostart);
+    let autostart_flags = MF_STRING
+        | if autostart::is_enabled() {
+            MF_CHECKED
+        } else {
+            MENU_ITEM_FLAGS(0)
+        };
+    let _ = AppendMenuW(
+        menu,
+        autostart_flags,
+        MENU_AUTOSTART,
+        PCWSTR(autostart_text.as_ptr()),
+    );
     let _ = AppendMenuW(
         menu,
         MF_STRING | MF_POPUP,
@@ -1174,6 +1189,10 @@ unsafe fn menu(hwnd: HWND) {
         MENU_HIDE => {
             note_manual_hide();
             start_fade_out(hwnd, false);
+        }
+        MENU_AUTOSTART => {
+            let enabled = autostart::is_enabled();
+            let _ = autostart::set_enabled(!enabled);
         }
         MENU_QUIT => {
             // A hidden eframe window may never confirm a WM_CLOSE (eframe only
