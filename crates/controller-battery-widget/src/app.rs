@@ -31,10 +31,8 @@ const POSITION_SAVE_DEBOUNCE: Duration = Duration::from_millis(500);
 
 pub struct App {
     shared: Arc<Mutex<Shared>>,
-    settings: Settings,
-    /// Settings already applied to the UI/tray, so a change is noticed once.
+    settings: Arc<Mutex<Settings>>,
     applied_language: Language,
-    applied_auto_hide: bool,
     applied_window_level: WindowLevel,
     last_saved: Option<egui::Pos2>,
     pending_pos: Option<(egui::Pos2, Instant)>,
@@ -68,8 +66,9 @@ impl App {
             .map(|(x, y)| egui::pos2(x, y));
 
         let shared = Arc::new(Mutex::new(Shared::default()));
+        let settings = Arc::new(Mutex::new(settings));
         collector::spawn(shared.clone());
-        let window = tray::spawn(cc, shared.clone());
+        let window = tray::spawn(cc, shared.clone(), settings.clone());
         tray::set_auto_hide(applied_auto_hide);
         tray::set_window_level(applied_window_level);
 
@@ -77,7 +76,6 @@ impl App {
             shared,
             settings,
             applied_language,
-            applied_auto_hide,
             applied_window_level,
             last_saved,
             pending_pos: None,
@@ -87,6 +85,12 @@ impl App {
             hide_requested: false,
             menu_requested: false,
         }
+    }
+
+    fn lock_settings(&self) -> std::sync::MutexGuard<'_, Settings> {
+        self.settings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -146,10 +150,12 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if let Some(level) = tray::take_pending_window_level() {
-            self.settings.window_level = level;
+        if let Some((level, retry_save)) = tray::take_pending_window_level() {
             self.applied_window_level = level;
             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level.to_egui()));
+            if retry_save {
+                let _ = self.lock_settings().save();
+            }
         }
 
         let devices = collector::snapshot(&self.shared);
@@ -247,7 +253,7 @@ impl eframe::App for App {
                 );
             });
 
-        if self.settings.window_level == WindowLevel::AlwaysOnBottom && (clicked || drag_stopped) {
+        if self.applied_window_level == WindowLevel::AlwaysOnBottom && (clicked || drag_stopped) {
             tray::enforce_bottom_if_needed();
         }
 
@@ -255,15 +261,42 @@ impl eframe::App for App {
         // would freeze half-drawn behind the menu's modal loop.
         if std::mem::take(&mut self.menu_requested) {
             if let Some(window) = self.window {
-                match menu::show(window, &self.settings, tray::available()) {
+                let snapshot = self.lock_settings().clone();
+                let command = menu::show(window, &snapshot, tray::available());
+                let mut changed_level = false;
+                match command {
                     Some(menu::Command::ToggleAutoHide) => {
-                        self.settings.auto_hide = !self.settings.auto_hide;
+                        let enabled = {
+                            let mut guard = self.lock_settings();
+                            guard.auto_hide = !guard.auto_hide;
+                            let _ = guard.save();
+                            guard.auto_hide
+                        };
+                        tray::set_auto_hide(enabled);
                     }
                     Some(menu::Command::SetWindowLevel(level)) => {
-                        self.settings.window_level = level;
+                        {
+                            let mut guard = self.lock_settings();
+                            guard.window_level = level;
+                            let _ = guard.save();
+                        }
+                        self.applied_window_level = level;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level.to_egui()));
+                        tray::set_window_level(level);
+                        changed_level = true;
                     }
                     Some(menu::Command::SetLanguage(language)) => {
-                        self.settings.language = language;
+                        {
+                            let mut guard = self.lock_settings();
+                            guard.language = language;
+                            let _ = guard.save();
+                        }
+                        if language != self.applied_language {
+                            self.applied_language = language;
+                            i18n::set(language);
+                            install_fonts(ctx, i18n::resolved());
+                            ctx.request_repaint();
+                        }
                     }
                     Some(menu::Command::HideToTray) => self.hide_requested = true,
                     Some(menu::Command::Quit) => {
@@ -271,16 +304,7 @@ impl eframe::App for App {
                     }
                     None => {}
                 }
-                // Apply window-level changes immediately before enforcing z-order
-                // so `tray.rs` already sees the new level.
-                if self.settings.window_level != self.applied_window_level {
-                    self.applied_window_level = self.settings.window_level;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                        self.applied_window_level.to_egui(),
-                    ));
-                    tray::set_window_level(self.applied_window_level);
-                    self.settings.save();
-                } else if self.settings.window_level == WindowLevel::AlwaysOnBottom {
+                if !changed_level && self.applied_window_level == WindowLevel::AlwaysOnBottom {
                     // `menu::show` calls `SetForegroundWindow(card)` so clicks
                     // outside dismiss the popup; drop back to bottom if needed.
                     tray::enforce_bottom_if_needed();
@@ -295,29 +319,6 @@ impl eframe::App for App {
             if let Some(window) = self.window {
                 let _ = tray::hide(window);
             }
-        }
-
-        // Settings changed from the context menu during this frame: apply them
-        // once, persist, and let the next frame use the new strings.
-        if self.settings.language != self.applied_language {
-            self.applied_language = self.settings.language;
-            i18n::set(self.applied_language);
-            install_fonts(ctx, i18n::resolved());
-            self.settings.save();
-            ctx.request_repaint();
-        }
-        if self.settings.auto_hide != self.applied_auto_hide {
-            self.applied_auto_hide = self.settings.auto_hide;
-            tray::set_auto_hide(self.applied_auto_hide);
-            self.settings.save();
-        }
-        if self.settings.window_level != self.applied_window_level {
-            self.applied_window_level = self.settings.window_level;
-            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
-                self.applied_window_level.to_egui(),
-            ));
-            tray::set_window_level(self.applied_window_level);
-            self.settings.save();
         }
 
         if let Some(pos) = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min) {
@@ -345,9 +346,12 @@ impl eframe::App for App {
 
 impl App {
     fn save_position(&mut self, pos: egui::Pos2) {
-        self.settings.window_x = Some(pos.x);
-        self.settings.window_y = Some(pos.y);
-        self.settings.save();
+        {
+            let mut guard = self.lock_settings();
+            guard.window_x = Some(pos.x);
+            guard.window_y = Some(pos.y);
+            let _ = guard.save();
+        }
         self.last_saved = Some(pos);
         self.pending_pos = None;
     }

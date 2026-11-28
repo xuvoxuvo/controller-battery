@@ -76,37 +76,8 @@ fn config_path() -> Option<PathBuf> {
     Some(data_dir()?.join("settings.json"))
 }
 
-/// Serialises reads and writes so the UI thread and the tray thread never race
-/// when persisting settings.
-static FILE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 impl Settings {
     pub fn load() -> Self {
-        let _guard = FILE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        Self::load_unlocked()
-    }
-
-    pub fn save(&self) {
-        let _guard = FILE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        self.save_unlocked();
-    }
-
-    /// Persist only `window_level` on disk immediately (used by the tray thread
-    /// when the card may be hidden and `App::update` is not running).
-    pub fn save_window_level(level: WindowLevel) {
-        let _guard = FILE_LOCK
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let mut settings = Self::load_unlocked();
-        settings.window_level = level;
-        settings.save_unlocked();
-    }
-
-    fn load_unlocked() -> Self {
         let Some(path) = config_path() else {
             return Self::default();
         };
@@ -116,16 +87,29 @@ impl Settings {
         serde_json::from_str(&text).unwrap_or_default()
     }
 
-    fn save_unlocked(&self) {
+    pub fn save(&self) -> bool {
         let Some(path) = config_path() else {
-            return;
+            eprintln!("settings: cannot determine LOCALAPPDATA directory");
+            return false;
         };
         if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
+            if let Err(error) = std::fs::create_dir_all(dir) {
+                eprintln!("settings: failed to create {}: {error}", dir.display());
+                return false;
+            }
         }
-        if let Ok(text) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(path, text);
+        let text = match serde_json::to_string_pretty(self) {
+            Ok(text) => text,
+            Err(error) => {
+                eprintln!("settings: failed to serialize: {error}");
+                return false;
+            }
+        };
+        if let Err(error) = std::fs::write(&path, text) {
+            eprintln!("settings: failed to write {}: {error}", path.display());
+            return false;
         }
+        true
     }
 }
 

@@ -58,7 +58,7 @@ use crate::autohide::{Action, AutoHide};
 use crate::collector::{self, Shared};
 use crate::i18n;
 use crate::icon_glyph;
-use crate::settings::WindowLevel;
+use crate::settings::{Settings, WindowLevel};
 
 /// Callback message the shell sends for mouse activity on the icon.
 const WM_TRAY: u32 = WM_APP + 1;
@@ -78,6 +78,8 @@ const MENU_LEVEL: usize = 10;
 
 /// Device collection state; shared with the collector threads.
 static SHARED: OnceLock<Arc<Mutex<Shared>>> = OnceLock::new();
+/// Shared settings, so tray menu updates cannot be overwritten by the UI thread.
+static SETTINGS: OnceLock<Arc<Mutex<Settings>>> = OnceLock::new();
 /// eframe's window, as `isize` so it can live in a `static`.
 static MAIN_WINDOW: AtomicIsize = AtomicIsize::new(0);
 /// The hidden window that receives the shell callbacks.
@@ -127,8 +129,11 @@ static ABORT_FADE: AtomicBool = AtomicBool::new(false);
 static HIDING: AtomicBool = AtomicBool::new(false);
 /// Desired z-order (`WindowLevel::as_u8()`), kept in sync across UI & tray.
 static WINDOW_LEVEL: AtomicU8 = AtomicU8::new(0);
-/// Pending z-order selected from the tray menu for the UI thread to persist.
+/// Pending z-order selected from the tray menu for the UI thread to sync.
 static PENDING_WINDOW_LEVEL: AtomicU8 = AtomicU8::new(u8::MAX);
+/// True when the tray thread's `Settings::save()` failed and the UI thread
+/// should retry persisting on the next frame.
+static PENDING_WINDOW_LEVEL_UNSAVED: AtomicBool = AtomicBool::new(false);
 
 struct FadeState {
     hiding: bool,
@@ -159,10 +164,15 @@ fn deadline_lock() -> std::sync::MutexGuard<'static, Option<Instant>> {
 }
 
 /// Start the tray thread. Returns eframe's window handle for hide/show.
-pub fn spawn(cc: &eframe::CreationContext<'_>, shared: Arc<Mutex<Shared>>) -> Option<isize> {
+pub fn spawn(
+    cc: &eframe::CreationContext<'_>,
+    shared: Arc<Mutex<Shared>>,
+    settings: Arc<Mutex<Settings>>,
+) -> Option<isize> {
     let window = main_window(cc)?;
     MAIN_WINDOW.store(window, Ordering::Release);
     let _ = SHARED.set(shared);
+    let _ = SETTINGS.set(settings);
 
     std::thread::Builder::new()
         .name("tray-icon".to_owned())
@@ -374,9 +384,13 @@ pub fn enforce_bottom_if_needed() {
 }
 
 /// Consume a window level change picked from the tray context menu, if any.
-pub fn take_pending_window_level() -> Option<WindowLevel> {
+/// Returns `(level, retry_save)` where `retry_save` is true if the tray thread
+/// could not write `settings.json`.
+pub fn take_pending_window_level() -> Option<(WindowLevel, bool)> {
     let raw = PENDING_WINDOW_LEVEL.swap(u8::MAX, Ordering::AcqRel);
-    WindowLevel::from_u8(raw)
+    let level = WindowLevel::from_u8(raw)?;
+    let retry_save = PENDING_WINDOW_LEVEL_UNSAVED.swap(false, Ordering::AcqRel);
+    Some((level, retry_save))
 }
 
 /// The card was shown by the user; hold auto-hide for a few seconds.
@@ -1163,7 +1177,18 @@ unsafe fn menu(hwnd: HWND) {
         id if (MENU_LEVEL..MENU_LEVEL + WindowLevel::ALL.len()).contains(&id) => {
             let level = WindowLevel::ALL[id - MENU_LEVEL];
             set_window_level(level);
-            crate::settings::Settings::save_window_level(level);
+            let saved = if let Some(settings) = SETTINGS.get() {
+                let mut guard = settings
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                guard.window_level = level;
+                guard.save()
+            } else {
+                false
+            };
+            if !saved {
+                PENDING_WINDOW_LEVEL_UNSAVED.store(true, Ordering::Release);
+            }
             PENDING_WINDOW_LEVEL.store(level.as_u8(), Ordering::Release);
         }
         _ => {}
