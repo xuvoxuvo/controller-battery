@@ -6,6 +6,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::Language;
 
+/// Window z-order preference, persisted in `settings.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum WindowLevel {
+    #[default]
+    #[serde(rename = "top")]
+    AlwaysOnTop,
+    #[serde(rename = "normal")]
+    Normal,
+    #[serde(rename = "bottom")]
+    AlwaysOnBottom,
+}
+
+impl WindowLevel {
+    pub const ALL: [WindowLevel; 3] = [
+        WindowLevel::AlwaysOnTop,
+        WindowLevel::Normal,
+        WindowLevel::AlwaysOnBottom,
+    ];
+
+    pub fn to_egui(self) -> eframe::egui::WindowLevel {
+        match self {
+            Self::AlwaysOnTop => eframe::egui::WindowLevel::AlwaysOnTop,
+            Self::Normal => eframe::egui::WindowLevel::Normal,
+            Self::AlwaysOnBottom => eframe::egui::WindowLevel::AlwaysOnBottom,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        match self {
+            Self::AlwaysOnTop => 0,
+            Self::Normal => 1,
+            Self::AlwaysOnBottom => 2,
+        }
+    }
+
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::AlwaysOnTop),
+            1 => Some(Self::Normal),
+            2 => Some(Self::AlwaysOnBottom),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -15,6 +60,8 @@ pub struct Settings {
     pub language: Language,
     /// Hide the card when no controller is reporting.
     pub auto_hide: bool,
+    /// Window z-order preference (top / normal / bottom).
+    pub window_level: WindowLevel,
 }
 
 /// `%LOCALAPPDATA%\ControllerBattery` — settings and diagnostics live here.
@@ -175,6 +222,7 @@ mod tests {
         assert_eq!(settings.window_y, Some(34.0));
         assert_eq!(settings.language, Language::System);
         assert!(!settings.auto_hide);
+        assert_eq!(settings.window_level, WindowLevel::AlwaysOnTop);
     }
 
     #[test]
@@ -184,12 +232,15 @@ mod tests {
             window_y: Some(5.0),
             language: Language::TraditionalChinese,
             auto_hide: true,
+            window_level: WindowLevel::AlwaysOnBottom,
         };
         let text = serde_json::to_string(&settings).unwrap();
         assert!(text.contains("zh-TW"));
+        assert!(text.contains("bottom"));
         let parsed: Settings = serde_json::from_str(&text).unwrap();
         assert_eq!(parsed.language, Language::TraditionalChinese);
         assert!(parsed.auto_hide);
+        assert_eq!(parsed.window_level, WindowLevel::AlwaysOnBottom);
     }
 
     #[test]
@@ -199,6 +250,17 @@ mod tests {
             let parsed: Language = serde_json::from_str(&text).unwrap();
             assert_eq!(parsed, language);
             assert!(!text.is_empty());
+        }
+    }
+
+    #[test]
+    fn every_window_level_has_a_stable_name() {
+        for level in WindowLevel::ALL {
+            let text = serde_json::to_string(&level).unwrap();
+            let parsed: WindowLevel = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed, level);
+            assert!(!text.is_empty());
+            assert_eq!(WindowLevel::from_u8(level.as_u8()), Some(level));
         }
     }
 }

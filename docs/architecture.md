@@ -76,8 +76,8 @@
 
 ## 界面
 
-* `egui`/`eframe` 立即模式 UI，单窗口、无边框、置顶、可拖动；
-* 位置与语言、自动隐藏开关保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
+* `egui`/`eframe` 立即模式 UI，单窗口、无边框、可拖动，窗口层级可在「始终置顶 / 普通窗口 / 始终置底」间切换（通过 `egui::WindowLevel` 与 Win32 `HWND_BOTTOM` 强制维护实现）；
+* 位置、窗口层级、语言与自动隐藏开关保存在 `%LOCALAPPDATA%\ControllerBattery\settings.json`；
 * 界面文案统一走 `i18n.rs`：`Language::System` 跟随 Windows 界面语言，也可在右键菜单固定为简体中文 / 繁體中文 / English；
 * 右键菜单是原生 Win32 菜单（`menu.rs`）：egui 的弹出层被限制在卡片窗口里会被裁剪，原生菜单能超出卡片、在屏幕边缘自动翻转，并跟随系统主题；
 * 只依赖系统 DLL，不引入 WebView，因此在 LTSC / 精简系统上也能跑。

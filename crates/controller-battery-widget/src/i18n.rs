@@ -15,6 +15,7 @@ use controller_battery_core::model::{ChargeState, Transport};
 use serde::{Deserialize, Serialize};
 
 use crate::collector::{DeviceState, ErrorKind, FallbackName};
+use crate::settings::WindowLevel;
 
 /// Language the user picked in the menu, persisted in `settings.json`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -167,6 +168,10 @@ pub struct Strings {
     pub hide_to_tray: &'static str,
     pub quit: &'static str,
     pub auto_hide: &'static str,
+    pub window_level: &'static str,
+    pub level_top: &'static str,
+    pub level_normal: &'static str,
+    pub level_bottom: &'static str,
     pub language: &'static str,
     pub system_language: &'static str,
 
@@ -219,6 +224,14 @@ impl Strings {
             Language::SimplifiedChinese => "简体中文",
             Language::TraditionalChinese => "繁體中文",
             Language::English => "English",
+        }
+    }
+
+    pub fn window_level_name(&self, level: WindowLevel) -> &'static str {
+        match level {
+            WindowLevel::AlwaysOnTop => self.level_top,
+            WindowLevel::Normal => self.level_normal,
+            WindowLevel::AlwaysOnBottom => self.level_bottom,
         }
     }
 
@@ -279,6 +292,10 @@ static SIMPLIFIED_CHINESE: Strings = Strings {
     hide_to_tray: "隐藏到托盘",
     quit: "退出",
     auto_hide: "空闲时自动隐藏",
+    window_level: "窗口层级",
+    level_top: "始终置顶",
+    level_normal: "普通窗口",
+    level_bottom: "始终置底",
     language: "语言",
     system_language: "跟随系统",
     xbox_fallback_fmt: "Xbox 手柄 {}",
@@ -315,6 +332,10 @@ static TRADITIONAL_CHINESE: Strings = Strings {
     hide_to_tray: "隱藏到系統匣",
     quit: "結束",
     auto_hide: "閒置時自動隱藏",
+    window_level: "視窗層級",
+    level_top: "永遠置頂",
+    level_normal: "一般視窗",
+    level_bottom: "永遠置底",
     language: "語言",
     system_language: "跟隨系統",
     xbox_fallback_fmt: "Xbox 手把 {}",
@@ -351,6 +372,10 @@ static ENGLISH: Strings = Strings {
     hide_to_tray: "Hide to tray",
     quit: "Quit",
     auto_hide: "Auto-hide when idle",
+    window_level: "Window level",
+    level_top: "Always on top",
+    level_normal: "Normal",
+    level_bottom: "Always on bottom",
     language: "Language",
     system_language: "System",
     xbox_fallback_fmt: "Xbox Controller {}",
@@ -406,6 +431,12 @@ mod tests {
                 );
             }
             assert!(!table.error(ErrorKind::DualSenseOpenFailed).is_empty());
+            for level in WindowLevel::ALL {
+                assert!(
+                    !table.window_level_name(level).is_empty(),
+                    "{name}: {level:?}"
+                );
+            }
         }
     }
 
@@ -472,6 +503,10 @@ mod tests {
                 ("hide_to_tray", self.hide_to_tray),
                 ("quit", self.quit),
                 ("auto_hide", self.auto_hide),
+                ("window_level", self.window_level),
+                ("level_top", self.level_top),
+                ("level_normal", self.level_normal),
+                ("level_bottom", self.level_bottom),
                 ("language", self.language),
                 ("system_language", self.system_language),
                 ("xbox_fallback_fmt", self.xbox_fallback_fmt),

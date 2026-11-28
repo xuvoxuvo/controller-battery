@@ -16,7 +16,7 @@ use controller_battery_core::model::{BatteryReading, ChargeState};
 use crate::collector::{self, DeviceState, ErrorKind, Shared};
 use crate::i18n::{self, Language, Resolved, Strings};
 use crate::menu;
-use crate::settings::Settings;
+use crate::settings::{Settings, WindowLevel};
 use crate::tray;
 
 pub const WIDTH: f32 = 230.0;
@@ -35,6 +35,7 @@ pub struct App {
     /// Settings already applied to the UI/tray, so a change is noticed once.
     applied_language: Language,
     applied_auto_hide: bool,
+    applied_window_level: WindowLevel,
     last_saved: Option<egui::Pos2>,
     pending_pos: Option<(egui::Pos2, Instant)>,
     window_height: f32,
@@ -60,6 +61,7 @@ impl App {
 
         let applied_language = settings.language;
         let applied_auto_hide = settings.auto_hide;
+        let applied_window_level = settings.window_level;
         let last_saved = settings
             .window_x
             .zip(settings.window_y)
@@ -69,12 +71,14 @@ impl App {
         collector::spawn(shared.clone());
         let window = tray::spawn(cc, shared.clone());
         tray::set_auto_hide(applied_auto_hide);
+        tray::set_window_level(applied_window_level);
 
         Self {
             shared,
             settings,
             applied_language,
             applied_auto_hide,
+            applied_window_level,
             last_saved,
             pending_pos: None,
             window_height: EMPTY_HEIGHT,
@@ -142,6 +146,10 @@ impl eframe::App for App {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(level) = tray::take_pending_window_level() {
+            self.settings.window_level = level;
+        }
+
         let devices = collector::snapshot(&self.shared);
         let error = collector::lock_shared(&self.shared).error;
         let countdown = tray::countdown();
@@ -190,6 +198,7 @@ impl eframe::App for App {
             ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(WIDTH, height)));
         }
 
+        let mut clicked = false;
         let mut drag_stopped = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(Color32::TRANSPARENT))
@@ -208,6 +217,9 @@ impl eframe::App for App {
                     tray::note_user_interaction();
                 }
 
+                if response.clicked() {
+                    clicked = true;
+                }
                 if response.drag_started() {
                     ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
                 }
@@ -233,6 +245,10 @@ impl eframe::App for App {
                 );
             });
 
+        if self.settings.window_level == WindowLevel::AlwaysOnBottom && (clicked || drag_stopped) {
+            tray::enforce_bottom_if_needed();
+        }
+
         // A native popup must open after the frame is painted, or the card
         // would freeze half-drawn behind the menu's modal loop.
         if std::mem::take(&mut self.menu_requested) {
@@ -240,6 +256,9 @@ impl eframe::App for App {
                 match menu::show(window, &self.settings, tray::available()) {
                     Some(menu::Command::ToggleAutoHide) => {
                         self.settings.auto_hide = !self.settings.auto_hide;
+                    }
+                    Some(menu::Command::SetWindowLevel(level)) => {
+                        self.settings.window_level = level;
                     }
                     Some(menu::Command::SetLanguage(language)) => {
                         self.settings.language = language;
@@ -249,6 +268,11 @@ impl eframe::App for App {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     None => {}
+                }
+                // `menu::show` calls `SetForegroundWindow(card)` so clicks
+                // outside dismiss the popup; drop back to bottom if needed.
+                if self.settings.window_level == WindowLevel::AlwaysOnBottom {
+                    tray::enforce_bottom_if_needed();
                 }
             }
         }
@@ -274,6 +298,14 @@ impl eframe::App for App {
         if self.settings.auto_hide != self.applied_auto_hide {
             self.applied_auto_hide = self.settings.auto_hide;
             tray::set_auto_hide(self.applied_auto_hide);
+            self.settings.save();
+        }
+        if self.settings.window_level != self.applied_window_level {
+            self.applied_window_level = self.settings.window_level;
+            ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                self.applied_window_level.to_egui(),
+            ));
+            tray::set_window_level(self.applied_window_level);
             self.settings.save();
         }
 

@@ -14,7 +14,7 @@
 //! the same value so hovering the icon answers "how much is left?" without
 //! looking at the card.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
@@ -41,21 +41,24 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AppendMenuW, ChangeWindowMessageFilterEx, CreateIconIndirect, CreatePopupMenu, CreateWindowExW,
-    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetMessageW,
-    GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible, KillTimer,
-    PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow,
-    SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    TrackPopupMenuEx, TranslateMessage, GWL_EXSTYLE, HICON, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS,
-    MF_ENABLED, MF_GRAYED, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNORMAL, TPM_RETURNCMD,
-    TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK, WM_LBUTTONUP,
-    WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_OVERLAPPED,
+    DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, GetCursorPos, GetForegroundWindow,
+    GetMessageW, GetShellWindow, GetWindowLongPtrW, GetWindowThreadProcessId, IsWindowVisible,
+    KillTimer, PostMessageW, PostQuitMessage, RegisterClassW, RegisterWindowMessageW,
+    SetForegroundWindow, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TrackPopupMenuEx, TranslateMessage, GWL_EXSTYLE, HICON, HWND_BOTTOM,
+    HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, ICONINFO, LWA_ALPHA, MENU_ITEM_FLAGS, MF_CHECKED,
+    MF_ENABLED, MF_GRAYED, MF_POPUP, MF_SEPARATOR, MF_STRING, MSG, MSGFLT_ALLOW, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE,
+    SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE, WM_APP, WM_CLOSE, WM_DESTROY,
+    WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_NULL, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_TIMER, WNDCLASSW,
+    WS_EX_LAYERED, WS_OVERLAPPED,
 };
 
 use crate::autohide::{Action, AutoHide};
 use crate::collector::{self, Shared};
 use crate::i18n;
 use crate::icon_glyph;
+use crate::settings::WindowLevel;
 
 /// Callback message the shell sends for mouse activity on the icon.
 const WM_TRAY: u32 = WM_APP + 1;
@@ -70,6 +73,8 @@ const ICON_ID: u32 = 1;
 const MENU_SHOW: usize = 1;
 const MENU_HIDE: usize = 2;
 const MENU_QUIT: usize = 3;
+/// Window level entries occupy `MENU_LEVEL + index into WindowLevel::ALL`.
+const MENU_LEVEL: usize = 10;
 
 /// Device collection state; shared with the collector threads.
 static SHARED: OnceLock<Arc<Mutex<Shared>>> = OnceLock::new();
@@ -120,6 +125,10 @@ static FADING: AtomicBool = AtomicBool::new(false);
 static ABORT_FADE: AtomicBool = AtomicBool::new(false);
 /// A hide fade is running, so the card shows "hiding…".
 static HIDING: AtomicBool = AtomicBool::new(false);
+/// Desired z-order (`WindowLevel::as_u8()`), kept in sync across UI & tray.
+static WINDOW_LEVEL: AtomicU8 = AtomicU8::new(0);
+/// Pending z-order selected from the tray menu for the UI thread to persist.
+static PENDING_WINDOW_LEVEL: AtomicU8 = AtomicU8::new(u8::MAX);
 
 struct FadeState {
     hiding: bool,
@@ -285,6 +294,98 @@ pub fn set_auto_hide(enabled: bool) {
         .set_enabled(enabled);
     drop(state);
     *deadline_lock() = None;
+}
+
+fn current_window_level() -> WindowLevel {
+    WindowLevel::from_u8(WINDOW_LEVEL.load(Ordering::Acquire)).unwrap_or_default()
+}
+
+fn push_to_bottom(window: HWND) {
+    unsafe {
+        let _ = SetWindowPos(
+            window,
+            HWND_BOTTOM,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
+fn apply_window_level_win32(window: HWND, level: WindowLevel) {
+    unsafe {
+        match level {
+            WindowLevel::AlwaysOnTop => {
+                let _ = SetWindowPos(
+                    window,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+            WindowLevel::Normal => {
+                let _ = SetWindowPos(
+                    window,
+                    HWND_NOTOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                let _ = SetWindowPos(
+                    window,
+                    HWND_TOP,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+            WindowLevel::AlwaysOnBottom => {
+                let _ = SetWindowPos(
+                    window,
+                    HWND_NOTOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                push_to_bottom(window);
+            }
+        }
+    }
+}
+
+/// Apply the user's preferred window z-order (`top` / `normal` / `bottom`).
+pub fn set_window_level(level: WindowLevel) {
+    WINDOW_LEVEL.store(level.as_u8(), Ordering::Release);
+    if let Some(window) = main_window_handle() {
+        apply_window_level_win32(window, level);
+    }
+}
+
+/// Keep an `AlwaysOnBottom` card behind other windows after clicks, drags, or
+/// context menu activation (winit does not enforce `HWND_BOTTOM` on its own).
+pub fn enforce_bottom_if_needed() {
+    if current_window_level() == WindowLevel::AlwaysOnBottom {
+        if let Some(window) = main_window_handle() {
+            push_to_bottom(window);
+        }
+    }
+}
+
+/// Consume a window level change picked from the tray context menu, if any.
+pub fn take_pending_window_level() -> Option<WindowLevel> {
+    let raw = PENDING_WINDOW_LEVEL.swap(u8::MAX, Ordering::AcqRel);
+    WindowLevel::from_u8(raw)
 }
 
 /// The card was shown by the user; hold auto-hide for a few seconds.
@@ -474,6 +575,13 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
     let Some(window) = main_window_handle() else {
         return;
     };
+    let bottom = current_window_level() == WindowLevel::AlwaysOnBottom;
+    let effective_focus = focus_after && !bottom;
+    let show_cmd = if effective_focus {
+        SW_SHOWNORMAL
+    } else {
+        SW_SHOWNOACTIVATE
+    };
 
     // If a fade-out is in progress (e.g. second launch wakes the card mid-fade),
     // cancel it cleanly and restore full opacity instead of flashing to alpha 0.
@@ -481,8 +589,10 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
         cancel_active_fade(tray_hwnd);
         set_alpha(window, 255);
         unsafe {
-            let _ = ShowWindow(window, SW_SHOWNORMAL);
-            if focus_after {
+            let _ = ShowWindow(window, show_cmd);
+            if bottom {
+                push_to_bottom(window);
+            } else if effective_focus {
                 let _ = SetForegroundWindow(window);
             }
         }
@@ -492,7 +602,7 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
     // Already fading in: let the active animation finish without snapping alpha
     // to 255 (which would flash back down on the next 50 ms step).
     if FADING.load(Ordering::Acquire) {
-        if focus_after {
+        if effective_focus {
             if let Some(fade) = ACTIVE_FADE
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -503,6 +613,8 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
             unsafe {
                 let _ = SetForegroundWindow(window);
             }
+        } else if bottom {
+            push_to_bottom(window);
         }
         return;
     }
@@ -510,7 +622,9 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
     // Already visible and steady: avoid flashing alpha 0 -> 255 on single-instance wake.
     if unsafe { IsWindowVisible(window).as_bool() } {
         set_alpha(window, 255);
-        if focus_after {
+        if bottom {
+            push_to_bottom(window);
+        } else if effective_focus {
             unsafe {
                 let _ = SetForegroundWindow(window);
             }
@@ -528,8 +642,10 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
     let finish_immediately = || {
         set_alpha(window, 255);
         unsafe {
-            let _ = ShowWindow(window, SW_SHOWNORMAL);
-            if focus_after {
+            let _ = ShowWindow(window, show_cmd);
+            if bottom {
+                push_to_bottom(window);
+            } else if effective_focus {
                 let _ = SetForegroundWindow(window);
             }
         }
@@ -543,7 +659,10 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
 
     set_alpha(window, 0);
     unsafe {
-        let _ = ShowWindow(window, SW_SHOWNORMAL);
+        let _ = ShowWindow(window, show_cmd);
+    }
+    if bottom {
+        push_to_bottom(window);
     }
 
     *ACTIVE_FADE
@@ -553,7 +672,7 @@ fn start_fade_in(tray_hwnd: HWND, focus_after: bool) {
         step: 0,
         total: FADE_STEPS_IN,
         hint_after: false,
-        focus_after,
+        focus_after: effective_focus,
     });
     if unsafe { SetTimer(tray_hwnd, FADE_TIMER_ID, FADE_FRAME_MS, None) } == 0 {
         *ACTIVE_FADE
@@ -646,7 +765,9 @@ fn step_fade(tray_hwnd: HWND) {
         } else {
             set_alpha(window, 255);
             FADING.store(false, Ordering::Release);
-            if focus_after {
+            if current_window_level() == WindowLevel::AlwaysOnBottom {
+                push_to_bottom(window);
+            } else if focus_after {
                 unsafe {
                     let _ = SetForegroundWindow(window);
                 }
@@ -694,7 +815,10 @@ fn restore_if_hidden(tray_hwnd: HWND) {
         cancel_active_fade(tray_hwnd);
         set_alpha(window, 255);
         unsafe {
-            let _ = ShowWindow(window, SW_SHOWNORMAL);
+            let _ = ShowWindow(window, SW_SHOWNOACTIVATE);
+        }
+        if current_window_level() == WindowLevel::AlwaysOnBottom {
+            push_to_bottom(window);
         }
         note_manual_show();
     }
@@ -903,6 +1027,13 @@ unsafe extern "system" fn window_proc(
                 }
                 refresh(hwnd);
                 auto_hide_tick(hwnd);
+                if current_window_level() == WindowLevel::AlwaysOnBottom {
+                    if let Some(window) = main_window_handle() {
+                        if IsWindowVisible(window).as_bool() && GetForegroundWindow() != window {
+                            push_to_bottom(window);
+                        }
+                    }
+                }
             }
             LRESULT(0)
         }
@@ -958,6 +1089,10 @@ unsafe fn menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else {
         return;
     };
+    let Ok(level_menu) = CreatePopupMenu() else {
+        let _ = DestroyMenu(menu);
+        return;
+    };
     let visible = main_window_handle()
         .map(|window| IsWindowVisible(window).as_bool())
         .unwrap_or(false);
@@ -965,7 +1100,20 @@ unsafe fn menu(hwnd: HWND) {
     let strings = i18n::current();
     let show_text = wide(strings.tray_show);
     let hide_text = wide(strings.tray_hide);
+    let level_text = wide(strings.window_level);
     let quit_text = wide(strings.quit);
+
+    let active_level = current_window_level();
+    for (index, level) in WindowLevel::ALL.iter().enumerate() {
+        let text = wide(strings.window_level_name(*level));
+        let flags = MF_STRING
+            | if active_level == *level {
+                MF_CHECKED
+            } else {
+                MENU_ITEM_FLAGS(0)
+            };
+        let _ = AppendMenuW(level_menu, flags, MENU_LEVEL + index, PCWSTR(text.as_ptr()));
+    }
 
     let show_flags = if visible { MF_GRAYED } else { MF_ENABLED };
     let hide_flags = if visible { MF_ENABLED } else { MF_GRAYED };
@@ -980,6 +1128,13 @@ unsafe fn menu(hwnd: HWND) {
         MENU_ITEM_FLAGS(MF_STRING.0 | hide_flags.0),
         MENU_HIDE,
         PCWSTR(hide_text.as_ptr()),
+    );
+    let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING | MF_POPUP,
+        level_menu.0 as usize,
+        PCWSTR(level_text.as_ptr()),
     );
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     let _ = AppendMenuW(menu, MF_STRING, MENU_QUIT, PCWSTR(quit_text.as_ptr()));
@@ -1013,6 +1168,11 @@ unsafe fn menu(hwnd: HWND) {
             // closes after a repaint), so quit directly after removing the icon.
             remove_icon();
             std::process::exit(0);
+        }
+        id if (MENU_LEVEL..MENU_LEVEL + WindowLevel::ALL.len()).contains(&id) => {
+            let level = WindowLevel::ALL[id - MENU_LEVEL];
+            set_window_level(level);
+            PENDING_WINDOW_LEVEL.store(level.as_u8(), Ordering::Release);
         }
         _ => {}
     }

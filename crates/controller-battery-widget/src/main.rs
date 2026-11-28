@@ -33,7 +33,7 @@ fn main() -> eframe::Result<()> {
         .with_resizable(true)
         .with_decorations(false)
         .with_transparent(true)
-        .with_always_on_top()
+        .with_window_level(settings.window_level.to_egui())
         .with_taskbar(false);
 
     if let (Some(x), Some(y)) = (settings.window_x, settings.window_y) {
