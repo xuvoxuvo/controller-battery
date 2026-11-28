@@ -119,7 +119,6 @@ static AUTO_HIDE: Mutex<Option<AutoHide>> = Mutex::new(None);
 const FADE_STEPS_OUT: u32 = 40; // 40 × 50 ms = the 2 s fade-out
 const FADE_STEPS_IN: u32 = 6; // 300 ms fade-in, snappy when a pad wakes up
 const FADE_FRAME_MS: u32 = 50;
-static FADE_INIT: AtomicBool = AtomicBool::new(false);
 static FADE_READY: AtomicBool = AtomicBool::new(false);
 /// A fade is in progress; ignore tray clicks until it finishes.
 static FADING: AtomicBool = AtomicBool::new(false);
@@ -489,14 +488,16 @@ fn apply_auto_action(tray_hwnd: HWND, action: Action) {
     }
 }
 
-/// Make the card a layered window so the whole composition (squircle, text,
-/// battery bar) can fade as one. Called once, lazily, from hide/show.
+/// Make sure the card has `WS_EX_LAYERED` so the whole composition (squircle,
+/// text, battery bar) can fade as one. Always checks the live style bit
+/// because `winit`'s `WindowFlags::apply_diff` (e.g. on `WindowLevel`
+/// changes) rewrites `GWL_EXSTYLE` and strips `WS_EX_LAYERED`.
 fn ensure_fade_ready(window: HWND) {
-    if FADE_INIT.swap(true, Ordering::AcqRel) {
-        return;
-    }
     unsafe {
         let current = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+        if current & WS_EX_LAYERED.0 != 0 && FADE_READY.load(Ordering::Acquire) {
+            return;
+        }
         if current & WS_EX_LAYERED.0 == 0 {
             SetWindowLongPtrW(window, GWL_EXSTYLE, (current | WS_EX_LAYERED.0) as isize);
             let _ = SetWindowPos(
@@ -516,7 +517,13 @@ fn ensure_fade_ready(window: HWND) {
 
 fn set_alpha(window: HWND, alpha: u8) {
     unsafe {
-        let _ = SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA);
+        if SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA).is_err() {
+            let current = GetWindowLongPtrW(window, GWL_EXSTYLE) as u32;
+            if current & WS_EX_LAYERED.0 == 0 {
+                SetWindowLongPtrW(window, GWL_EXSTYLE, (current | WS_EX_LAYERED.0) as isize);
+                let _ = SetLayeredWindowAttributes(window, COLORREF(0), alpha, LWA_ALPHA);
+            }
+        }
     }
 }
 
